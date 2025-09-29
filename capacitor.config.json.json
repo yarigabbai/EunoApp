@@ -1,0 +1,9 @@
+{
+  "appId": "com.euno.autopilot",
+  "appName": "EUNO Autopilot",
+  "webDir": "www",
+  "server": {
+    "cleartext": true,
+    "androidScheme": "file"
+  }
+}

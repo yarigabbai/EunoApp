@@ -1,0 +1,9 @@
+{
+  "appId": "com.euno.autopilot",
+  "appName": "EUNO Autopilot",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "cleartext": true
+  }
+}
