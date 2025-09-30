@@ -376,12 +376,13 @@ function setWsLed(connected){
 }
 
 function wsConnect(){
-  const url = "ws://192.168.4.1:81/";   // fisso
+    const url = "ws://192.168.4.1:81/";  
   log('WS → '+url);
   try{ ws = new WebSocket(url); }catch(e){ log('WS error init '+e.message); setWsLed(false); return; }
   ws.onopen  = _=> { log('WS connected'); setWsLed(true); };
   ws.onclose = _=> { log('WS closed, retry 2s'); setWsLed(false); setTimeout(wsConnect,2000); };
-  ws.onerror = e=> { log('WS error ' + e.message); setWsLed(false); };
+   ws.onerror = e=> { log('WS error ' + e.message); setWsLed(false); };
+
   ws.onmessage = ev=>{
     const t = (ev.data || '').trim();
     if (t.startsWith('$AUTOPILOT')) parseTelem(t);
