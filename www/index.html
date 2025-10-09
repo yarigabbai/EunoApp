@@ -54,6 +54,15 @@ header{
 .led-err{background:#ff4d4d}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
 .blink{animation:blink 1s infinite}
+/* ====== DAY MODE ====== */
+body.day{background:#ffffff;color:#000000;}
+body.day .card{background:#f2f2f2;border:1px solid #ccc;color:#000;}
+body.day header{background:#eee;border-bottom:1px solid #ccc;}
+body.day .nav{background:#eee;border-top:1px solid #ccc;}
+body.day .lbl{color:#333;}
+body.day button{background:#007bff;color:#fff;border-color:#005fcc;}
+body.day .btn-on{background:#28a745;color:#fff;}
+body.day .btn-off{background:#dc3545;color:#fff;}
 
 /* ====== Viewport / Slides (full-screen) ====== */
 .viewport{position:fixed;inset:var(--hdrH) 0 var(--navH) 0;overflow:hidden}
@@ -70,13 +79,13 @@ header{
 .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
 .sep{height:1px;background:var(--navy-3);margin:14px 0}
 .stack{display:flex;flex-direction:column;gap:6px}
-.lbl{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em;font-weight:750}
-.val{font:clamp(28px,6vw,44px)/1.05 var(--mono);font-weight:900}
+.lbl{color:var(--muted);font-size:18px;text-transform:uppercase;letter-spacing:.05em;font-weight:750}
+.val{font:clamp(36px,6vw,54px)/1.05 var(--mono);font-weight:900}
 
 /* Inputs & Buttons */
 input,select,button{
-  border-radius:12px;border:1px solid var(--navy-3);background:transparent;color:var(--white);
-  padding:12px 14px;font-weight:650;min-height:44px
+.lbl{color:var(--muted);font-size:18px;text-transform:uppercase;letter-spacing:.05em;font-weight:750}
+.val{font:clamp(36px,6vw,54px)/1.05 var(--mono);font-weight:900}
 }
 :where(input,select,button):focus-visible{outline:3px solid var(--ring);outline-offset:2px}
 button{cursor:pointer;transition:transform .06s ease}
@@ -171,6 +180,8 @@ button:active{transform:translateY(1px)}
     <!-- ===== PAGE 1: HOME ===== -->
     <section class="slide">
       <div class="card">
+
+
         <div class="grid3">
           <div class="stack"><div class="lbl">Heading</div><div class="val" id="hdg_big">—</div></div>
           <div class="stack"><div class="lbl">Command</div><div class="val" id="cmd_big">—</div></div>
@@ -203,6 +214,13 @@ button:active{transform:translateY(1px)}
     <!-- ===== PAGE 2: SETUP ===== -->
     <section class="slide">
       <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+  <div class="lbl" style="font-size:16px">Settings</div>
+  <label class="switch">
+    <input type="checkbox" id="themeSwitch" onchange="toggleTheme(this.checked)">
+    <span class="slider"></span>
+  </label>
+</div>
         <div class="grid2">
           <div>
             <div class="stack kv">
@@ -297,18 +315,7 @@ button:active{transform:translateY(1px)}
         </div>
         <div class="lbl" style="opacity:.9;margin-top:8px">POST /api/net with ssid, pass</div>
 
-        <div class="scan-panel">
-          <div class="row">
-            <button id="scanBtn" class="btn-acc">Scan networks</button>
-            <span id="scanLbl" class="lbl" style="opacity:.95"></span>
-          </div>
-          <div class="row" style="margin-top:10px">
-            <label class="lbl">Found SSIDs</label>
-            <select id="ssidSelect" style="min-width:220px"></select>
-            <button id="ssidUseBtn" class="btn-acc">Use selected SSID</button>
-          </div>
-          <small class="lbl" style="display:block;margin-top:8px;opacity:.85">If available, uses /api/scan (POST to start, then GET polling).</small>
-        </div>
+    
 
         <!-- BT RING status box -->
         <div class="status-box" id="ringBox">
@@ -318,6 +325,22 @@ button:active{transform:translateY(1px)}
             <span id="ringText" class="lbl" style="text-transform:none">Disconnected</span>
           </div>
         </div>
+
+<!-- ===== Firmware status box ===== -->
+<div class="status-box" id="fwBox" style="margin-top:12px">
+  <div class="title">Firmware</div>
+  <div class="stack">
+    <div class="lbl">Current: <span id="fw_local">—</span></div>
+    <div class="lbl">Latest: <span id="fw_online">—</span></div>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <button class="btn-step" onclick="checkFw()">Check Update</button>
+    <button class="btn-step" onclick="uploadFw()">Manual Upload</button>
+    <button class="btn-step" onclick="autoUpdate()">Auto Online</button>
+  </div>
+  <input type="file" id="fwFile" accept=".bin" style="display:none">
+</div>
+
 
         <div class="sep"></div>
         <div class="row"><div class="lbl">Console</div></div>
@@ -355,6 +378,18 @@ vp.addEventListener('touchstart',e=>{ touching=true; sx=e.touches[0].clientX; })
 vp.addEventListener('touchmove',e=>{ if(!touching)return; dx=e.touches[0].clientX - sx; });
 vp.addEventListener('touchend',()=>{ if(!touching)return; touching=false; if(Math.abs(dx)>50){ if(dx<0) go(page+1); else go(page-1);} dx=0; });
 window.addEventListener('keydown',e=>{ if(e.key==='ArrowRight') go(page+1); if(e.key==='ArrowLeft') go(page-1); });
+
+/* ===== Theme (Day/Night) ===== */
+function toggleTheme(on){
+  document.body.classList.toggle('day', on);
+  localStorage.setItem('theme', on ? 'day' : 'night');
+}
+function initTheme(){
+  const s = localStorage.getItem('theme') === 'day';
+  document.body.classList.toggle('day', s);
+  const sw = document.getElementById('themeSwitch');
+  if(sw) sw.checked = s;
+}
 
 /* ===== State + WS ===== */
 let ws, logEl = document.getElementById('log');
@@ -426,6 +461,7 @@ function parseTelem(line){
   // Mode/Motor
   if (m.MODE){ const el=document.getElementById('mode'); if(el) el.textContent=m.MODE; }
   if (m.MOTOR){ motor = (m.MOTOR==='ON'); }
+if (m.BLE) setRingStatus(m.BLE === 'ON');
 
   // HDG/CMD/ERR
   if (m.HEADING)      hdg = ((parseFloat(m.HEADING) || 0) + 360) % 360;
@@ -592,13 +628,100 @@ function setRingStatus(connected){
   selSSID && selSSID.addEventListener('change', ()=>{ inputSSID.value = selSSID.value||""; });
 })();
 
+/* ===== OTA Management ===== */
+/* ===== OTA / Firmware Check ===== */
+/* ===== CHECK VERSION ===== */
+/* ===== CHECK VERSION (solo mostra versioni) ===== */
+async function checkFw(){
+  try {
+    // 1️⃣ Leggi versione locale dal tuo ESP
+    const local = await fetch('/api/fw_version', { cache: 'no-store' })
+      .then(r => r.text());
+    const fwLocal = (local || '').trim();
+    document.getElementById('fw_local').textContent = fwLocal;
+    log('Local firmware: ' + fwLocal);
+
+    // 2️⃣ Leggi versione online dal manifest remoto
+    const manifestUrl = 'https://eunosail.com/firmware/manifest.json';
+    const manifest = await fetch(manifestUrl, { cache: 'no-store' })
+      .then(r => r.json());
+    const fwOnline = manifest.latest || '—';
+    document.getElementById('fw_online').textContent = fwOnline;
+
+    // 3️⃣ Log confronto
+    if (fwLocal !== fwOnline)
+      log('🟡 New version available online: ' + fwOnline);
+    else
+      log('✅ Firmware is already up to date.');
+  } catch (e) {
+    log('❌ Check version failed: ' + e.message);
+    document.getElementById('fw_online').textContent = '—';
+  }
+}
+
+
+
+
+
+function uploadFw(){ document.getElementById('fwFile').click(); }
+document.getElementById('fwFile').addEventListener('change', async (ev)=>{
+  const f = ev.target.files[0];
+  if(!f){ log('No file selected'); return; }
+  log('Uploading '+f.name+'...');
+  const form = new FormData(); form.append('update', f);
+  try{
+    const res = await fetch('/update',{method:'POST',body:form});
+    const txt = await res.text(); log(txt);
+  }catch(e){ log('Upload failed: '+e.message); }
+});
+
+/* ===== AUTO UPDATE (scarica e installa se più recente) ===== */
+async function autoUpdate(){
+  try {
+    // 1️⃣ Ottieni versione locale
+    const local = await fetch('/api/fw_version', { cache: 'no-store' })
+      .then(r => r.text());
+    const fwLocal = (local || '').trim();
+    log('Local firmware: ' + fwLocal);
+
+    // 2️⃣ Ottieni manifest online
+    const manifestUrl = 'https://eunosail.com/firmware/manifest.json';
+    const manifest = await fetch(manifestUrl, { cache: 'no-store' }).then(r => r.json());
+    const fwOnline = manifest.latest || '—';
+    const fwUrl = manifest.url;
+
+    // 3️⃣ Se aggiornato, interrompi
+    if (fwLocal === fwOnline) {
+      log('✅ Firmware is already up to date.');
+      return;
+    }
+
+    log('⬇️ Downloading new firmware: ' + fwOnline);
+    const bin = await fetch(fwUrl);
+    if (!bin.ok) throw new Error('Download failed: ' + bin.status);
+    const data = await bin.blob();
+
+    // 4️⃣ Invia OTA all’ESP
+    const form = new FormData();
+    form.append('update', data, fwUrl.split('/').pop());
+    const res = await fetch('/update', { method: 'POST', body: form });
+    const txt = await res.text();
+
+    log('✅ OTA update complete: ' + txt);
+  } catch (e) {
+    log('❌ Auto update failed: ' + e.message);
+  }
+}
+
+
+
 
 /* ===== Init ===== */
 function init(){
   initScale();
   setWsLed(false);
   setRingStatus(false);
-  paintHome(); updateVisual(); wsConnect();
+  paintHome(); updateVisual(); wsConnect(); initTheme(); 
 }
 window.addEventListener('load', init);
 </script>

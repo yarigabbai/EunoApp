@@ -14,6 +14,9 @@ public class MainActivity extends BridgeActivity {
     // Registra il plugin che gestisce la rete cellulare in parallelo
     registerPlugin(CellularPlugin.class);
 
+    // 🔽🔽🔽 AGGIUNGI QUESTA RIGA 🔽🔽🔽
+    registerPlugin(EunoUdpPlugin.class);
+
     // Sblocca contenuti misti (es. ws://, http://192.168.4.1 con app https)
     WebView wv = getBridge().getWebView();
     WebSettings ws = wv.getSettings();
@@ -23,3 +26,4 @@ public class MainActivity extends BridgeActivity {
     WebView.setWebContentsDebuggingEnabled(true);
   }
 }
+
