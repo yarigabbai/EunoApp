@@ -1,5 +1,4 @@
-
-const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -684,8 +683,14 @@ function send(s){ if(ws && ws.readyState===1){ ws.send(s); log('> '+s); } }
    Base delle chiamate HTTP. Serviti dall'ESP siamo su http:// e basta un
    percorso relativo; dentro l'app Capacitor la pagina è su file://, dove
    '/api/...' punta al filesystem del telefono e la fetch fallisce. */
+/* Base delle chiamate HTTP verso l'autopilota.
+   Va decisa sull'HOST, non sul protocollo: l'app Capacitor gira su
+   https://localhost, quindi un controllo su location.protocol la scambiava
+   per "servita dall'ESP" e lasciava le fetch in locale — dove ricevevano
+   l'index.html dell'app e fallivano il JSON.parse. */
+const ESP_HOST = '192.168.4.1';
 function apiBase(){
-  return location.protocol.startsWith('http') ? '' : 'http://192.168.4.1';
+  return (location.hostname === ESP_HOST) ? '' : ('http://' + ESP_HOST);
 }
 function logStart(){ send('$PEUNO,CMD,LOG=START'); setTimeout(logList, 600); }
 function logStop(){  send('$PEUNO,CMD,LOG=STOP');  setTimeout(logList, 600); }
@@ -1180,4 +1185,4 @@ window.addEventListener("load", () => setTimeout(checkAppUpdate, 1500));
 
 
 </body>
-</html>)rawliteral";
+</html>
