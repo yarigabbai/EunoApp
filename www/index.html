@@ -390,6 +390,16 @@ body.day .btn-modern-network {
               <button class="btn-modern-cal" onclick="extbrgOn()">EXT BRG ON</button>
               <button class="btn-modern-cal" onclick="extbrgOff()">EXT BRG OFF</button>
             </div>
+            <!-- Registrazione delle prove in mare: i quattro heading su CSV,
+                 da riguardare a terra invece di giudicarli a occhio a bordo. -->
+            <div class="lbl" style="opacity:.9;margin-top:10px">Sea-trial log</div>
+            <div class="row" style="gap:6px;flex-wrap:wrap">
+              <button class="btn-modern-cal" onclick="logStart()">LOG START</button>
+              <button class="btn-modern-cal" onclick="logStop()">LOG STOP</button>
+              <button class="btn-modern-cal" onclick="logList()">FILES</button>
+            </div>
+            <div id="logStatus" class="lbl" style="opacity:.8;margin-top:6px">—</div>
+            <div id="logFiles" class="lbl" style="opacity:.9;margin-top:6px"></div>
             <div class="lbl" style="opacity:.9">Commands: $PEUNO,CMD,...</div>
           </div>
         </div>
@@ -659,6 +669,47 @@ function send(s){ if(ws && ws.readyState===1){ ws.send(s); log('> '+s); } }
 /* Failsafe: il firmware pubblica FAILSAFE=OK oppure il motivo del blocco
    (COMPASS_INIT = bussola non trovata, COMPASS_STALE = ha smesso di
    rispondere). Con il failsafe attivo il pilota non si accende. */
+
+/* ===== Sea-trial log =====
+   Base delle chiamate HTTP. Serviti dall'ESP siamo su http:// e basta un
+   percorso relativo; dentro l'app Capacitor la pagina è su file://, dove
+   '/api/...' punta al filesystem del telefono e la fetch fallisce. */
+function apiBase(){
+  return location.protocol.startsWith('http') ? '' : 'http://192.168.4.1';
+}
+function logStart(){ send('$PEUNO,CMD,LOG=START'); setTimeout(logList, 600); }
+function logStop(){  send('$PEUNO,CMD,LOG=STOP');  setTimeout(logList, 600); }
+async function logList(){
+  const box = document.getElementById('logFiles');
+  if (box) box.textContent = 'Loading...';
+  try{
+    const res = await fetch(apiBase() + '/api/log/list', {cache:'no-store'});
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const d = await res.json();
+    if (!box) return;
+    if (!d.files || !d.files.length){ box.textContent = 'Nessun file. ' + d.free_kb + ' KB liberi.'; return; }
+    box.innerHTML = d.files.map(f =>
+      '<div><a href="' + apiBase() + '/api/log/get?f=' + encodeURIComponent(f.name) + '" download>'
+      + f.name + '</a> &middot; ' + Math.round(f.size/1024) + ' KB'
+      + ' <a href="#" onclick="logDel(\'' + f.name + '\');return false">[x]</a></div>'
+    ).join('') + '<div style="margin-top:4px">' + d.free_kb + ' KB liberi</div>';
+  }catch(e){
+    if (box) box.textContent = 'Errore: ' + e.message;
+  }
+}
+async function logDel(name){
+  try{
+    await fetch(apiBase() + '/api/log/del?f=' + encodeURIComponent(name), {cache:'no-store'});
+    logList();
+  }catch(e){ log('log del: ' + e.message); }
+}
+function setLogStatus(state, freeKb){
+  const el = document.getElementById('logStatus');
+  if (!el) return;
+  if (state === 'NA')      el.textContent = 'Filesystem non montato — serve $PEUNO,CMD,LOG=FORMAT una volta';
+  else if (state === 'ON') el.textContent = 'REC in corso · ' + freeKb + ' KB liberi';
+  else                     el.textContent = 'Fermo · ' + freeKb + ' KB liberi';
+}
 function setFailsafe(state){
   const ok = (state === 'OK');
   let el = document.getElementById('failsafeBar');
@@ -715,6 +766,7 @@ function parseTelem(line){
     const sel=document.getElementById('selMode'); if(sel && sel.value!==m.MODE) sel.value=m.MODE;
   }
   if (m.FAILSAFE!==undefined) setFailsafe(m.FAILSAFE);
+  if (m.LOG!==undefined) setLogStatus(m.LOG, m.LOGF||0);
   if (m.MOTOR){ motor = (m.MOTOR==='ON'); }
 if (m.BLE) setRingStatus(m.BLE === 'ON');
 
