@@ -382,13 +382,23 @@ body.day .btn-modern-network {
                 <option>COMPASS</option>
                 <option>FUSION</option>
                 <option>EXPERIMENTAL</option>
-                <option>ADV</option>
+                <option>DEVIATION</option>
               </select>
               <button class="btn-modern-cal" onclick="send('$PEUNO,CMD,CAL=MAG')">CAL MAG</button>
               <button class="btn-modern-cal" onclick="send('$PEUNO,CMD,CAL=GYRO')">CAL GYRO</button>
               <button class="btn-modern-cal" onclick="cgps()">CAL C-GPS</button>
               <button class="btn-modern-cal" onclick="extbrgOn()">EXT BRG ON</button>
               <button class="btn-modern-cal" onclick="extbrgOff()">EXT BRG OFF</button>
+            <!-- Giro di bussola: misura la deviazione del sistema installato
+                 usando il COG del GPS come riferimento. Sostituisce la
+                 vecchia tabella ADV a 72 punti. -->
+            <div class="lbl" style="opacity:.9;margin-top:10px">Compass swing (deviation)</div>
+            <div class="row" style="gap:6px;flex-wrap:wrap">
+              <button class="btn-modern-cal" onclick="swingStart()">SWING START</button>
+              <button class="btn-modern-cal" onclick="swingStop()">SWING STOP</button>
+              <button class="btn-modern-cal" onclick="swingClear()">CLEAR</button>
+            </div>
+            <div id="swingStatus" class="lbl" style="opacity:.8;margin-top:6px">—</div>
             </div>
             <!-- Registrazione delle prove in mare: i quattro heading su CSV,
                  da riguardare a terra invece di giudicarli a occhio a bordo. -->
@@ -710,6 +720,26 @@ function setLogStatus(state, freeKb){
   else if (state === 'ON') el.textContent = 'REC in corso · ' + freeKb + ' KB liberi';
   else                     el.textContent = 'Fermo · ' + freeKb + ' KB liberi';
 }
+
+/* ===== Giro di bussola (tabella di deviazione A,B,C,D,E) =====
+   Va fatto in navigazione sopra i 3 nodi, con uno o due cerchi lenti e
+   completi: il COG del GPS fa da riferimento contro cui misurare lo scarto
+   della bussola prua per prua. */
+function swingStart(){ send('$PEUNO,CMD,CAL=SWING'); }
+function swingStop(){  send('$PEUNO,CMD,CAL=SWING_STOP'); }
+function swingClear(){ send('$PEUNO,CMD,CAL=SWING_CLEAR'); }
+function setSwing(sectors, dev, ok){
+  const el = document.getElementById('swingStatus');
+  if (!el) return;
+  if (sectors >= 0){
+    el.textContent = 'Giro in corso — ' + sectors + '/12 settori di prua coperti'
+                   + (sectors < 8 ? ' (ne servono almeno 8)' : ' — puoi chiudere');
+  } else if (ok){
+    el.textContent = 'Tabella attiva · correzione ora ' + (dev>=0?'+':'') + dev.toFixed(1) + '°';
+  } else {
+    el.textContent = 'Nessuna tabella di deviazione';
+  }
+}
 function setFailsafe(state){
   const ok = (state === 'OK');
   let el = document.getElementById('failsafeBar');
@@ -767,6 +797,7 @@ function parseTelem(line){
   }
   if (m.FAILSAFE!==undefined) setFailsafe(m.FAILSAFE);
   if (m.LOG!==undefined) setLogStatus(m.LOG, m.LOGF||0);
+  if (m.SWING!==undefined) setSwing(parseInt(m.SWING), parseFloat(m.DEV||0), m.DEVOK==='1');
   if (m.MOTOR){ motor = (m.MOTOR==='ON'); }
 if (m.BLE) setRingStatus(m.BLE === 'ON');
 
