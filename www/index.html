@@ -529,6 +529,18 @@ body.day .btn-modern-network {
         </div>
 
         <div id="mapInfo" class="lbl" style="opacity:.9;margin-top:8px">—</div>
+
+        <!-- La rotta viene compilata in una coda di istruzioni e caricata sulla
+             centralina: da quel momento il telefono si puo spegnere. -->
+        <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:10px">
+          <button class="btn-modern-cal" onclick="routeSend()">INVIA ROTTA</button>
+          <button class="btn-modern-cal" onclick="routeStart()">START</button>
+          <button class="btn-modern-cal" onclick="routeCmd('PAUSE')">PAUSA</button>
+          <button class="btn-modern-cal" onclick="routeCmd('RESUME')">RIPRENDI</button>
+          <button class="btn-modern-cal" onclick="routeCmd('SKIP')">SALTA WP</button>
+          <button class="btn-modern-cal" onclick="routeCmd('STOP')">ANNULLA</button>
+        </div>
+        <div id="routeInfo" class="lbl" style="opacity:.9;margin-top:8px">Nessuna rotta a bordo</div>
         <div class="lbl" style="opacity:.6;margin-top:6px;font-size:12px">
           Supporto visivo. Non sostituisce le carte nautiche ufficiali.
         </div>
@@ -795,6 +807,70 @@ function mapAddWp(){
   mapDraw();
 }
 
+/* ===== ROTTA =====
+   L'app e un editor, non un pilota: i waypoint disegnati qui vengono compilati
+   in una coda di istruzioni e caricati sulla centralina. Da quel momento il
+   telefono si puo spegnere — la rotta e a bordo e sopravvive a un riavvio. */
+const ROUTE_WP_RADIUS_M = 15;    // raggio di arrivo su un waypoint
+const ROUTE_WP_MIN_M    = 20;    // distanza minima fra waypoint consecutivi
+
+function mapUnproject(x, y){
+  const k = Math.cos(MAP.refLat * Math.PI / 180);
+  return { lat: MAP.refLat + y / M_PER_DEG_LAT,
+           lon: MAP.refLon + x / (M_PER_DEG_LAT * k) };
+}
+
+function routeCmd(v){ send('$PEUNO,CMD,ROUTE=' + v); }
+
+function routeSend(){
+  if (MAP.refLat === null){ log('Rotta: nessun fix, impossibile inviare'); return; }
+  if (!MAP.wps.length){ log('Rotta: nessun waypoint'); return; }
+
+  // Waypoint troppo vicini fra loro fanno oscillare l'inseguimento: il punto
+  // successivo entra nel raggio di arrivo prima che la virata sia finita.
+  let prev = {x: MAP.x, y: MAP.y}, tot = 0;
+  for (let i = 0; i < MAP.wps.length; i++){
+    const d = Math.hypot(MAP.wps[i].x - prev.x, MAP.wps[i].y - prev.y);
+    if (i > 0 && d < ROUTE_WP_MIN_M){
+      log('Rotta: waypoint ' + (i+1) + ' a ' + d.toFixed(0) + ' m dal precedente (minimo '
+          + ROUTE_WP_MIN_M + ' m)');
+      return;
+    }
+    tot += d; prev = MAP.wps[i];
+  }
+
+  const km = tot >= 1000 ? (tot/1000).toFixed(2) + ' km' : tot.toFixed(0) + ' m';
+  if (!confirm('Inviare ' + MAP.wps.length + ' waypoint (' + km + ' complessivi) alla centralina?\n\n'
+             + 'La rotta viene solo caricata: per farla eseguire serve START, e il pilota deve essere acceso.'))
+    return;
+
+  routeCmd('CLEAR');
+  for (const w of MAP.wps){
+    const g = mapUnproject(w.x, w.y);
+    routeCmd('ADD,GOTO,' + g.lat.toFixed(6) + ',' + g.lon.toFixed(6) + ',' + ROUTE_WP_RADIUS_M);
+  }
+  log('Rotta inviata: ' + MAP.wps.length + ' waypoint');
+}
+
+function routeStart(){
+  if (!confirm('Avviare la rotta?\n\nLa barca comincera a manovrare da sola. '
+             + 'Il comando manuale ha sempre la precedenza e sospende la rotta.')) return;
+  routeCmd('START');
+}
+
+/* Stato della rotta dalla telemetria: ROUTE=, RIDX=, RN=, XTE=, WPD= */
+function setRoute(state, idx, n, xte, wpd){
+  const el = document.getElementById('routeInfo');
+  if (!el) return;
+  if (!n || state === 'IDLE'){
+    el.textContent = n ? ('Rotta a bordo: ' + n + ' passi, ferma') : 'Nessuna rotta a bordo';
+    return;
+  }
+  const nomi = {RUN:'in esecuzione', PAUSE:'in pausa', DONE:'completata', FAULT:'errore'};
+  el.textContent = 'Rotta ' + (nomi[state] || state) + ' — passo ' + idx + '/' + n
+                 + ' — al waypoint ' + wpd + ' m — scarto ' + xte + ' m';
+}
+
 function mapDraw(){
   const cv = document.getElementById('plot');
   if (!cv) return;
@@ -982,6 +1058,9 @@ function parseTelem(line){
   if (m.SWING!==undefined) setSwing(parseInt(m.SWING), parseFloat(m.DEV||0), m.DEVOK==='1');
   if (m.LAT!==undefined && m.LON!==undefined)
     mapOnFix(parseFloat(m.LAT), parseFloat(m.LON), m.FIX==='1');
+  if (m.ROUTE!==undefined)
+    setRoute(m.ROUTE, parseInt(m.RIDX||0), parseInt(m.RN||0),
+             parseInt(m.XTE||0), parseInt(m.WPD||0));
   if (m.MOTOR){ motor = (m.MOTOR==='ON'); }
 if (m.BLE) setRingStatus(m.BLE === 'ON');
 
