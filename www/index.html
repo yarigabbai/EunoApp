@@ -541,6 +541,14 @@ body.day .btn-modern-network {
           <button class="btn-modern-cal" onclick="routeCmd('STOP')">ANNULLA</button>
         </div>
         <div id="routeInfo" class="lbl" style="opacity:.9;margin-top:8px">Nessuna rotta a bordo</div>
+
+        <!-- Isobate calcolate dal DTM EMODnet e tenute sul telefono: si
+             scaricano con la connessione, poi si disegnano offline. -->
+        <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:10px">
+          <button class="btn-modern-cal" onclick="bathyDownload()">SCARICA BATIMETRICHE</button>
+          <button class="btn-modern-cal" onclick="bathyClear()">CANCELLA</button>
+        </div>
+        <div id="bathyInfo" class="lbl" style="opacity:.9;margin-top:8px">Nessuna batimetrica in memoria</div>
         <div class="lbl" style="opacity:.6;margin-top:6px;font-size:12px">
           Supporto visivo. Non sostituisce le carte nautiche ufficiali.
         </div>
@@ -871,6 +879,240 @@ function setRoute(state, idx, n, xte, wpd){
                  + ' — al waypoint ' + wpd + ' m — scarto ' + xte + ' m';
 }
 
+/* ===== BATIMETRICHE =====
+   Le curve gia pronte di EMODnet (WFS) hanno intervalli 50, 100, 200 m: sotto
+   i 50 metri, cioe dove si pesca, non c'e niente. Si scarica invece il profilo
+   di profondita riga per riga — l'endpoint REST restituisce un array di
+   profondita campionate lungo una LINESTRING — si ricompone la griglia e si
+   ricavano le isobate con marching squares. Niente librerie, niente GeoTIFF:
+   una volta scaricate stanno sul telefono e si disegnano offline.
+
+   Il passo di 100 m e la risoluzione vera del DTM EMODnet (1/16 di primo):
+   chiedere piu fitto non aggiunge informazione, aggiunge solo byte. */
+const BATHY_URL    = 'https://rest.emodnet-bathymetry.eu/depth_profile?geom=';
+const BATHY_STEP_M = 100;
+const BATHY_LEVELS = [2, 5, 10, 15, 20, 30, 50, 75, 100, 150, 200];
+const BATHY_KEY    = 'euno_bathy';
+
+let BATHY = null;   // { lat0, lon0, lat1, lon1, nRow, nCol, grid, iso }
+let bathyBusy = false;
+
+function bathyMsg(s){
+  const el = document.getElementById('bathyInfo');
+  if (el) el.textContent = s;
+}
+
+/* L'endpoint EMODnet non manda gli header CORS, quindi dalla WebView una fetch
+   verrebbe bloccata. CapacitorHttp passa dal nativo e non ha il problema; nel
+   browser, dove Capacitor non c'e, si ripiega su fetch. */
+async function bathyGet(url){
+  const P = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.CapacitorHttp;
+  if (P){
+    const r = await P.get({ url: url, headers: { Accept: 'application/json' } });
+    if (r.status && r.status >= 400) throw new Error('HTTP ' + r.status);
+    return (typeof r.data === 'string') ? JSON.parse(r.data) : r.data;
+  }
+  const r = await fetch(url, { cache: 'no-store' });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return await r.json();
+}
+
+/* Marching squares su una griglia regolare. Restituisce segmenti sciolti, non
+   polilinee ordinate: per disegnarli e la stessa cosa e il codice resta corto.
+   Gli angoli sono numerati in senso antiorario da quello in basso a sinistra,
+   i lati fra angoli consecutivi. */
+const MS_CASES = [
+  [], [[3,0]], [[0,1]], [[3,1]], [[1,2]], [[3,0],[1,2]], [[0,2]], [[3,2]],
+  [[2,3]], [[2,0]], [[0,1],[2,3]], [[2,1]], [[1,3]], [[1,0]], [[0,3]], []
+];
+
+function bathyContour(grid, nRow, nCol, level){
+  const segs = [];
+  const at = (i,j) => grid[i * nCol + j];
+  // Il lato k va dall'angolo k al k+1: qui la posizione del taglio in
+  // coordinate di cella (0..1), interpolata linearmente sui due angoli.
+  const corner = [[0,0],[1,0],[1,1],[0,1]];   // [dj, di]
+  for (let i = 0; i < nRow - 1; i++){
+    for (let j = 0; j < nCol - 1; j++){
+      const d = [at(i,j), at(i,j+1), at(i+1,j+1), at(i+1,j)];
+      if (d.some(v => v === null || v === undefined || isNaN(v))) continue;
+      let idx = 0;
+      for (let k = 0; k < 4; k++) if (d[k] > level) idx |= (1 << k);
+      const cs = MS_CASES[idx];
+      if (!cs.length) continue;
+      const cut = (k) => {
+        const a = k, b = (k + 1) % 4;
+        const t = (level - d[a]) / (d[b] - d[a]);
+        return [ j + corner[a][0] + (corner[b][0] - corner[a][0]) * t,
+                 i + corner[a][1] + (corner[b][1] - corner[a][1]) * t ];
+      };
+      for (const [e1, e2] of cs){
+        const p = cut(e1), q = cut(e2);
+        segs.push([p[0], p[1], q[0], q[1]]);
+      }
+    }
+  }
+  return segs;
+}
+
+/* Da coordinate di cella a lat/lon */
+function bathyCellToGeo(b, cx, cy){
+  return { lat: b.lat0 + (b.lat1 - b.lat0) * (cy / (b.nRow - 1)),
+           lon: b.lon0 + (b.lon1 - b.lon0) * (cx / (b.nCol - 1)) };
+}
+
+/* Profondita sotto un punto, interpolata sulla griglia. Negativa = terra. */
+function bathyDepthAt(lat, lon){
+  const b = BATHY;
+  if (!b) return null;
+  const fy = (lat - b.lat0) / (b.lat1 - b.lat0) * (b.nRow - 1);
+  const fx = (lon - b.lon0) / (b.lon1 - b.lon0) * (b.nCol - 1);
+  if (fx < 0 || fy < 0 || fx > b.nCol - 1 || fy > b.nRow - 1) return null;
+  const i = Math.floor(fy), j = Math.floor(fx);
+  const i2 = Math.min(i + 1, b.nRow - 1), j2 = Math.min(j + 1, b.nCol - 1);
+  const ty = fy - i, tx = fx - j;
+  const g = b.grid, n = b.nCol;
+  const v = [g[i*n+j], g[i*n+j2], g[i2*n+j], g[i2*n+j2]];
+  if (v.some(x => x === null || isNaN(x))) return null;
+  return (v[0]*(1-tx) + v[1]*tx) * (1-ty) + (v[2]*(1-tx) + v[3]*tx) * ty;
+}
+
+async function bathyDownload(){
+  if (bathyBusy) return;
+  if (MAP.refLat === null){ bathyMsg('Nessun fix: non so quale zona scaricare'); return; }
+
+  // Il riquadro e quello inquadrato adesso sul plotter.
+  const cv = document.getElementById('plot');
+  const halfW = cv.clientWidth  / 2 / MAP.scale, halfH = cv.clientHeight / 2 / MAP.scale;
+  const c  = mapViewCenterMeters();
+  const sw = mapUnproject(c.x - halfW, c.y - halfH);
+  const ne = mapUnproject(c.x + halfW, c.y + halfH);
+
+  const wM = halfW * 2, hM = halfH * 2;
+  const nRow = Math.max(8, Math.min(60, Math.round(hM / BATHY_STEP_M) + 1));
+  const nCol = Math.max(8, Math.min(120, Math.round(wM / BATHY_STEP_M) + 1));
+
+  const km = (m) => m >= 1000 ? (m/1000).toFixed(1) + ' km' : Math.round(m) + ' m';
+  if (!confirm('Scaricare le batimetriche del riquadro inquadrato?\n\n'
+             + km(wM) + ' x ' + km(hM) + ', ' + nRow + ' richieste a EMODnet.\n'
+             + 'Serve la connessione a internet: fallo prima di uscire.\n\n'
+             + 'Sono un supporto visivo, non sostituiscono le carte nautiche.'))
+    return;
+
+  bathyBusy = true;
+  const grid = new Array(nRow * nCol).fill(NaN);
+  let errori = 0;
+
+  try {
+    for (let i = 0; i < nRow; i++){
+      const lat = sw.lat + (ne.lat - sw.lat) * (i / (nRow - 1));
+      const url = BATHY_URL + encodeURIComponent(
+        'LINESTRING(' + sw.lon.toFixed(6) + ' ' + lat.toFixed(6) + ','
+                      + ne.lon.toFixed(6) + ' ' + lat.toFixed(6) + ')');
+      bathyMsg('Scarico batimetriche… riga ' + (i+1) + '/' + nRow);
+      let prof = null;
+      try { prof = await bathyGet(url); } catch(e){ errori++; }
+      if (Array.isArray(prof) && prof.length){
+        for (let j = 0; j < nCol; j++){
+          const k = Math.round(j * (prof.length - 1) / (nCol - 1));
+          const v = prof[k];
+          // I valori sono negativi sotto il livello del mare: qui si lavora
+          // in profondita positiva, la terra resta negativa.
+          grid[i * nCol + j] = (typeof v === 'number') ? -v : NaN;
+        }
+      }
+    }
+  } finally { bathyBusy = false; }
+
+  if (errori === nRow){ bathyMsg('Batimetriche: nessuna risposta da EMODnet'); return; }
+
+  BATHY = { lat0: sw.lat, lon0: sw.lon, lat1: ne.lat, lon1: ne.lon,
+            nRow: nRow, nCol: nCol, grid: grid, iso: null };
+  bathyBuildIso();
+  bathySave();
+  mapDraw();
+  bathyMsg('Batimetriche pronte: ' + km(wM) + ' x ' + km(hM)
+           + (errori ? ' (' + errori + ' righe mancanti)' : '') + ' — disponibili offline');
+}
+
+function bathyBuildIso(){
+  const b = BATHY;
+  if (!b) return;
+  const vis = b.grid.filter(v => !isNaN(v));
+  if (!vis.length){ b.iso = []; return; }
+  const dmax = Math.max.apply(null, vis);
+  b.iso = [];
+  for (const lv of BATHY_LEVELS){
+    if (lv > dmax) break;
+    const segs = bathyContour(b.grid, b.nRow, b.nCol, lv);
+    if (segs.length) b.iso.push({ level: lv, segs: segs });
+  }
+}
+
+function bathySave(){
+  try {
+    const b = BATHY;
+    localStorage.setItem(BATHY_KEY, JSON.stringify({
+      lat0: b.lat0, lon0: b.lon0, lat1: b.lat1, lon1: b.lon1,
+      nRow: b.nRow, nCol: b.nCol,
+      grid: b.grid.map(v => isNaN(v) ? null : Math.round(v * 10) / 10)
+    }));
+  } catch(e){ bathyMsg('Batimetriche: memoria del telefono piena, non salvate'); }
+}
+
+function bathyLoad(){
+  try {
+    const s = localStorage.getItem(BATHY_KEY);
+    if (!s) return;
+    const o = JSON.parse(s);
+    o.grid = o.grid.map(v => v === null ? NaN : v);
+    BATHY = o;
+    bathyBuildIso();
+    bathyMsg('Batimetriche in memoria: ' + o.nRow + 'x' + o.nCol + ' punti');
+  } catch(e){ BATHY = null; }
+}
+
+function bathyClear(){
+  if (!confirm('Cancellare le batimetriche scaricate?')) return;
+  BATHY = null;
+  try { localStorage.removeItem(BATHY_KEY); } catch(e){}
+  bathyMsg('Nessuna batimetrica in memoria');
+  mapDraw();
+}
+
+/* Disegno: le isobate stanno sotto a tutto il resto, sono uno sfondo. */
+function bathyDrawOn(g, P){
+  const b = BATHY;
+  // Senza origine della proiezione non c'e dove disegnarle: si aspetta il fix.
+  if (!b || !b.iso || !b.iso.length || MAP.refLat === null) return;
+  const step = M_PER_DEG_LAT, k = Math.cos(MAP.refLat * Math.PI / 180);
+  const toM = (lat, lon) => ({ x: (lon - MAP.refLon) * step * k,
+                               y: (lat - MAP.refLat) * step });
+  for (const c of b.iso){
+    // Piu si va basso, piu la linea si fa scura: si legge il pendio a colpo d'occhio
+    const t = Math.min(1, c.level / 60);
+    g.strokeStyle = 'rgba(' + Math.round(120 - 60*t) + ',' + Math.round(190 - 80*t) + ',255,'
+                  + (0.30 + 0.35 * (c.level % 10 === 0 ? 1 : 0.4)).toFixed(2) + ')';
+    g.lineWidth = (c.level % 10 === 0) ? 1.6 : 1;
+    g.beginPath();
+    let etichetta = null;
+    for (let s = 0; s < c.segs.length; s++){
+      const q = c.segs[s];
+      const a = bathyCellToGeo(b, q[0], q[1]), z = bathyCellToGeo(b, q[2], q[3]);
+      const am = toM(a.lat, a.lon), zm = toM(z.lat, z.lon);
+      const p1 = P(am.x, am.y), p2 = P(zm.x, zm.y);
+      g.moveTo(p1.px, p1.py); g.lineTo(p2.px, p2.py);
+      if (s === Math.floor(c.segs.length / 2)) etichetta = p1;
+    }
+    g.stroke();
+    if (etichetta){
+      g.fillStyle = 'rgba(150,200,255,0.85)';
+      g.font = '10px system-ui,sans-serif';
+      g.fillText(c.level + ' m', etichetta.px + 3, etichetta.py - 3);
+    }
+  }
+}
+
 function mapDraw(){
   const cv = document.getElementById('plot');
   if (!cv) return;
@@ -908,6 +1150,8 @@ function mapDraw(){
     const p = P(MAP.x, my); g.moveTo(0,p.py); g.lineTo(w,p.py);
   }
   g.stroke();
+
+  bathyDrawOn(g, P);
 
   // traccia percorsa
   if (MAP.track.length > 1){
@@ -970,6 +1214,13 @@ function mapDraw(){
       el.textContent = 'Traccia: ' + MAP.track.length + ' punti - trascina la mappa, poi + WAYPOINT';
     }
   }
+  // Fondale sotto la barca, letto dalla griglia scaricata
+  if (el && MAP.fix && BATHY && MAP.refLat !== null){
+    const g0 = mapUnproject(MAP.x, MAP.y);
+    const d = bathyDepthAt(g0.lat, g0.lon);
+    if (d !== null) el.textContent += ' - fondale ' + (d < 0 ? 'terra' : d.toFixed(1) + ' m');
+  }
+
   const fx = document.getElementById('mapFix');
   if (fx) fx.textContent = MAP.fix ? 'fix ok' : 'no fix';
 }
@@ -993,6 +1244,7 @@ function mapDraw(){
       pinch = d;
     }, {passive:false});
     cv.addEventListener('touchend', function(){ pinch=0; });
+    bathyLoad();
     mapDraw();
   }
   bind();
@@ -1139,7 +1391,11 @@ function paintHome(){
 
 /* ===== Visual (Angular Progress Bar) ===== */
 function initScale(){
-  const scale=document.getElementById('ap_scale'); scale.innerHTML='';
+  // Anche questa e roba della vecchia sezione Visual: senza il nodo non c'e
+  // niente da costruire, e proseguire fermerebbe tutto l'avvio.
+  const scale=document.getElementById('ap_scale');
+  if (!scale) return;
+  scale.innerHTML='';
   for(let i=-30;i<=30;i+=5){
     const mark=document.createElement('div');
     const major = (i%10===0);
@@ -1192,12 +1448,9 @@ function updateVisual(){
   if(document.activeElement.id!=='ap_in_hdg') document.getElementById('ap_in_hdg').value = Math.round(norm(hdg));
   if(document.activeElement.id!=='ap_in_cmd') document.getElementById('ap_in_cmd').value = Math.round(norm(cmd));
 }
-document.getElementById('ap_in_hdg').addEventListener('input',e=>{
-  hdg = norm(parseInt(e.target.value)||0); paintHome(); updateVisual();
-});
-document.getElementById('ap_in_cmd').addEventListener('input',e=>{
-  cmd = norm(parseInt(e.target.value)||0); paintHome(); updateVisual();
-});
+/* Gli input manuali ap_in_hdg / ap_in_cmd erano nella sezione Visual, che ora
+   e la Mappa. I loro listener giravano ancora al caricamento e, non trovando i
+   nodi, interrompevano il resto dello script. */
 
 /* ===== BT RING status (placeholder, ready for telemetry) ===== */
 function setRingStatus(connected){
