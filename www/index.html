@@ -523,9 +523,14 @@ body.day .btn-modern-network {
           <button class="btn-modern-cal" onclick="mapZoom(1.6)">+</button>
           <button class="btn-modern-cal" onclick="mapZoom(0.625)">−</button>
           <button class="btn-modern-cal" onclick="mapCenter()">CENTRA</button>
-          <button class="btn-modern-cal" onclick="mapAddWp()">+ WAYPOINT</button>
-          <button class="btn-modern-cal" onclick="mapUndoWp()">ANNULLA WP</button>
+          <button class="btn-modern-cal" id="btnAddWp" onclick="mapAddWp()">+ WAYPOINT</button>
+          <button class="btn-modern-cal" onclick="mapDeleteWp()">ELIMINA WP</button>
+          <button class="btn-modern-cal" onclick="mapClearWps()">TOGLI TUTTI</button>
           <button class="btn-modern-cal" onclick="mapClearTrack()">PULISCI TRACCIA</button>
+        </div>
+        <div class="lbl" style="opacity:.6;margin-top:6px;font-size:12px">
+          Trascina per spostare la carta, pizzica per lo zoom. Un waypoint si
+          afferra col dito e si sposta; toccalo per selezionarlo.
         </div>
 
         <div id="mapInfo" class="lbl" style="opacity:.9;margin-top:8px">—</div>
@@ -773,59 +778,187 @@ function setSwing(sectors, dev, ok){
 }
 
 /* ===== PLOTTER =====
-   Fondo neutro, nessuna cartografia: funziona offline per costruzione, e da
-   solo copre gia i passaggi su uno spot e le figure geometriche. La
-   cartografia PMTiles si aggiunge sotto in un secondo momento.
+   Carta del mondo a bordo, batimetriche scaricabili a riquadri: in mare il
+   campo non c'e, quindi tutto quello che serve deve gia essere sul telefono.
 
-   Proiezione: equirettangolare locale attorno al primo fix. Su scale di
-   qualche chilometro l'errore e trascurabile e il calcolo resta banale. */
+   Proiezione di Mercatore, come le carte nautiche: le rotte a prua costante
+   sono rette. Tutto vive in lat/lon - barca, traccia, waypoint, isobate - e
+   la vista ha un suo centro indipendente dal GPS. Senza fix la mappa si usa
+   lo stesso: si sposta, si zooma, si piazzano i waypoint e si scarica il
+   riquadro. Prima invece niente esisteva finche non arrivava il primo fix,
+   perche l'origine della proiezione era quello. */
+const R_EARTH = 6378137;
+const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+
+function mercX(lon){ return R_EARTH * lon * D2R; }
+function mercY(lat){
+  const p = Math.max(-85, Math.min(85, lat)) * D2R;
+  return R_EARTH * Math.log(Math.tan(Math.PI/4 + p/2));
+}
+function mercLon(x){ return x / R_EARTH * R2D; }
+function mercLat(y){ return (2 * Math.atan(Math.exp(y / R_EARTH)) - Math.PI/2) * R2D; }
+
 const MAP = {
-  refLat: null, refLon: null,   // origine della proiezione locale
-  x: 0, y: 0,                   // posizione barca in metri dall'origine
-  fix: false,
-  track: [],                    // traccia percorsa, in metri
-  wps: [],                      // waypoint, in metri
-  scale: 0.6,                   // pixel per metro
-  panX: 0, panY: 0,             // scostamento della vista, in pixel
+  cLat: 41.90, cLon: 12.50,   // centro della vista; si parte dall'Italia
+  k: 3e-4,                    // pixel per metro di Mercatore
+  lat: 0, lon: 0, fix: false, // barca
+  track: [],                  // traccia percorsa, in lat/lon
+  wps: [],                    // waypoint, in lat/lon
+  sel: -1,                    // waypoint selezionato
+  addMode: false,             // il prossimo tocco piazza un waypoint
   follow: true,
   lastPush: 0
 };
-const M_PER_DEG_LAT = 111320;
+const K_MIN = 5e-6, K_MAX = 4;   // dal mondo intero a mezzo metro per pixel
 
-function mapProject(lat, lon){
-  const k = Math.cos(MAP.refLat * Math.PI / 180);
-  return { x: (lon - MAP.refLon) * M_PER_DEG_LAT * k,
-           y: (lat - MAP.refLat) * M_PER_DEG_LAT };
+/* Metri di terreno per pixel al centro della vista. In Mercatore la scala
+   dipende dalla latitudine: al 60esimo parallelo un pixel copre meta strada
+   che all'equatore. */
+function mapMPerPx(){ return Math.cos(MAP.cLat * D2R) / MAP.k; }
+
+function mapCanvas(){ return document.getElementById('plot'); }
+
+function mapScreenToGeo(px, py){
+  const cv = mapCanvas();
+  if (!cv) return { lat: MAP.cLat, lon: MAP.cLon };
+  return { lat: mercLat(mercY(MAP.cLat) - (py - cv.clientHeight/2) / MAP.k),
+           lon: mercLon(mercX(MAP.cLon) + (px - cv.clientWidth/2)  / MAP.k) };
+}
+function mapGeoToScreen(lat, lon){
+  const cv = mapCanvas();
+  return { px: cv.clientWidth/2  + (mercX(lon) - mercX(MAP.cLon)) * MAP.k,
+           py: cv.clientHeight/2 - (mercY(lat) - mercY(MAP.cLat)) * MAP.k };
 }
 
+/* Distanza e rotta fra due punti vicini: su qualche chilometro la proiezione
+   piana attorno alla latitudine media basta e avanza. */
+function geoDist(a, b){
+  const kx = Math.cos((a.lat + b.lat) / 2 * D2R) * 111320;
+  return Math.hypot((b.lon - a.lon) * kx, (b.lat - a.lat) * 111320);
+}
+function geoBrg(a, b){
+  const kx = Math.cos((a.lat + b.lat) / 2 * D2R) * 111320;
+  let d = Math.atan2((b.lon - a.lon) * kx, (b.lat - a.lat) * 111320) * R2D;
+  return (d + 360) % 360;
+}
+function fmtDist(m){ return m >= 1000 ? (m/1000).toFixed(2) + ' km' : m.toFixed(0) + ' m'; }
+
+/* ===== CARTA DEL MONDO =====
+   Due livelli di dettaglio da Natural Earth, gia dentro l'app: quello grosso
+   (64 kB) per la vista d'insieme, quello fine (875 kB) da vicino. Sono i
+   contorni delle terre emerse, quindi si riempiono: una linea sola non dice
+   da che parte sta il mare. */
+const WORLD = { lo: null, hi: null, loading: false };
+
+function worldPrep(arr){
+  return arr.map(f => {
+    let x0 = 180, y0 = 90, x1 = -180, y1 = -90;
+    for (let i = 0; i < f.length; i += 2){
+      if (f[i]   < x0) x0 = f[i];   if (f[i]   > x1) x1 = f[i];
+      if (f[i+1] < y0) y0 = f[i+1]; if (f[i+1] > y1) y1 = f[i+1];
+    }
+    return { p: f, b: [x0, y0, x1, y1] };
+  });
+}
+
+async function worldLoad(){
+  if (WORLD.loading) return;
+  WORLD.loading = true;
+  try {
+    WORLD.lo = worldPrep(await (await fetch('world110.json')).json());
+    mapDraw();
+    WORLD.hi = worldPrep(await (await fetch('world50.json')).json());
+    mapDraw();
+  } catch(e){
+    log('Mappa: carta del mondo non caricata (' + e.message + ')');
+  }
+}
+
+function worldDraw(g, w, h){
+  // Sopra i 200 m per pixel la carta fine non aggiunge niente che si veda,
+  // e sono 60.000 punti da attraversare a ogni ridisegno.
+  const set = (mapMPerPx() > 200 || !WORLD.hi) ? WORLD.lo : WORLD.hi;
+  if (!set) return;
+
+  const a = mapScreenToGeo(0, h), b = mapScreenToGeo(w, 0);   // angoli della vista
+  const vx0 = a.lon, vx1 = b.lon, vy0 = a.lat, vy1 = b.lat;
+
+  g.fillStyle   = 'rgba(120,120,110,0.30)';
+  g.strokeStyle = 'rgba(180,180,170,0.55)';
+  g.lineWidth = 1;
+  for (const f of set){
+    const bb = f.b;
+    if (bb[2] < vx0 || bb[0] > vx1 || bb[3] < vy0 || bb[1] > vy1) continue;  // fuori vista
+    const p = f.p;
+    g.beginPath();
+    for (let i = 0; i < p.length; i += 2){
+      const s = mapGeoToScreen(p[i+1], p[i]);
+      if (i) g.lineTo(s.px, s.py); else g.moveTo(s.px, s.py);
+    }
+    g.closePath();
+    g.fill();
+    g.stroke();
+  }
+}
+
+/* ===== POSIZIONE ===== */
 function mapOnFix(lat, lon, valid){
   MAP.fix = valid;
   if (!valid) return;
-  if (MAP.refLat === null){ MAP.refLat = lat; MAP.refLon = lon; }
-  const p = mapProject(lat, lon);
-  MAP.x = p.x; MAP.y = p.y;
+  MAP.lat = lat; MAP.lon = lon;
+  if (MAP.follow){ MAP.cLat = lat; MAP.cLon = lon; }
+
   // traccia: un punto ogni 2 s e solo se ci si e mossi di almeno 2 m
   const now = Date.now();
   const last = MAP.track[MAP.track.length - 1];
-  const far = !last || Math.hypot(p.x - last.x, p.y - last.y) > 2;
-  if (far && now - MAP.lastPush > 2000){
-    MAP.track.push({x:p.x, y:p.y});
+  const lontano = !last || geoDist(last, {lat, lon}) > 2;
+  if (lontano && now - MAP.lastPush > 2000){
+    MAP.track.push({lat, lon});
     if (MAP.track.length > 3000) MAP.track.shift();
     MAP.lastPush = now;
   }
 }
 
-function mapZoom(f){ MAP.scale = Math.min(40, Math.max(0.02, MAP.scale * f)); mapDraw(); }
-function mapCenter(){ MAP.follow = true; MAP.panX = 0; MAP.panY = 0; mapDraw(); }
-function mapClearTrack(){ MAP.track = []; mapDraw(); }
-function mapUndoWp(){ MAP.wps.pop(); mapDraw(); }
-function mapViewCenterMeters(){
-  return { x: MAP.x - MAP.panX / MAP.scale, y: MAP.y + MAP.panY / MAP.scale };
+/* ===== COMANDI ===== */
+function mapZoom(f){
+  MAP.k = Math.min(K_MAX, Math.max(K_MIN, MAP.k * f));
+  mapDraw();
 }
+function mapCenter(){
+  if (MAP.fix){
+    MAP.follow = true; MAP.cLat = MAP.lat; MAP.cLon = MAP.lon;
+  } else if (BATHY){
+    // Senza fix il posto sensato dove andare e il riquadro gia scaricato.
+    MAP.cLat = (BATHY.lat0 + BATHY.lat1) / 2;
+    MAP.cLon = (BATHY.lon0 + BATHY.lon1) / 2;
+    log('Mappa: nessun fix, vista sul riquadro scaricato');
+  } else {
+    log('Mappa: nessun fix e nessun riquadro scaricato');
+  }
+  mapDraw();
+}
+function mapClearTrack(){ MAP.track = []; mapDraw(); }
+
+/* Il pulsante arma il tocco successivo invece di piazzare il waypoint al
+   centro: su un telefono si vuole indicare il punto, non centrarlo prima. */
 function mapAddWp(){
-  if (MAP.refLat === null){ log('Mappa: nessun fix, waypoint non posizionabile'); return; }
-  const c = mapViewCenterMeters();
-  MAP.wps.push({x:c.x, y:c.y});
+  MAP.addMode = !MAP.addMode;
+  const b = document.getElementById('btnAddWp');
+  if (b) b.style.opacity = MAP.addMode ? '1' : '';
+  log(MAP.addMode ? 'Tocca la mappa dove vuoi il waypoint' : 'Inserimento waypoint annullato');
+  mapDraw();
+}
+function mapDeleteWp(){
+  if (!MAP.wps.length) return;
+  const i = (MAP.sel >= 0 && MAP.sel < MAP.wps.length) ? MAP.sel : MAP.wps.length - 1;
+  MAP.wps.splice(i, 1);
+  MAP.sel = -1;
+  mapDraw();
+}
+function mapClearWps(){
+  if (!MAP.wps.length) return;
+  if (!confirm('Togliere tutti i ' + MAP.wps.length + ' waypoint?')) return;
+  MAP.wps = []; MAP.sel = -1;
   mapDraw();
 }
 
@@ -836,41 +969,32 @@ function mapAddWp(){
 const ROUTE_WP_RADIUS_M = 15;    // raggio di arrivo su un waypoint
 const ROUTE_WP_MIN_M    = 20;    // distanza minima fra waypoint consecutivi
 
-function mapUnproject(x, y){
-  const k = Math.cos(MAP.refLat * Math.PI / 180);
-  return { lat: MAP.refLat + y / M_PER_DEG_LAT,
-           lon: MAP.refLon + x / (M_PER_DEG_LAT * k) };
-}
-
 function routeCmd(v){ send('$PEUNO,CMD,ROUTE=' + v); }
 
 function routeSend(){
-  if (MAP.refLat === null){ log('Rotta: nessun fix, impossibile inviare'); return; }
   if (!MAP.wps.length){ log('Rotta: nessun waypoint'); return; }
 
   // Waypoint troppo vicini fra loro fanno oscillare l'inseguimento: il punto
   // successivo entra nel raggio di arrivo prima che la virata sia finita.
-  let prev = {x: MAP.x, y: MAP.y}, tot = 0;
-  for (let i = 0; i < MAP.wps.length; i++){
-    const d = Math.hypot(MAP.wps[i].x - prev.x, MAP.wps[i].y - prev.y);
-    if (i > 0 && d < ROUTE_WP_MIN_M){
+  let tot = 0;
+  for (let i = 1; i < MAP.wps.length; i++){
+    const d = geoDist(MAP.wps[i-1], MAP.wps[i]);
+    if (d < ROUTE_WP_MIN_M){
       log('Rotta: waypoint ' + (i+1) + ' a ' + d.toFixed(0) + ' m dal precedente (minimo '
           + ROUTE_WP_MIN_M + ' m)');
       return;
     }
-    tot += d; prev = MAP.wps[i];
+    tot += d;
   }
+  if (MAP.fix) tot += geoDist({lat:MAP.lat, lon:MAP.lon}, MAP.wps[0]);
 
-  const km = tot >= 1000 ? (tot/1000).toFixed(2) + ' km' : tot.toFixed(0) + ' m';
-  if (!confirm('Inviare ' + MAP.wps.length + ' waypoint (' + km + ' complessivi) alla centralina?\n\n'
+  if (!confirm('Inviare ' + MAP.wps.length + ' waypoint (' + fmtDist(tot) + ' complessivi) alla centralina?\n\n'
              + 'La rotta viene solo caricata: per farla eseguire serve START, e il pilota deve essere acceso.'))
     return;
 
   routeCmd('CLEAR');
-  for (const w of MAP.wps){
-    const g = mapUnproject(w.x, w.y);
-    routeCmd('ADD,GOTO,' + g.lat.toFixed(6) + ',' + g.lon.toFixed(6) + ',' + ROUTE_WP_RADIUS_M);
-  }
+  for (const w of MAP.wps)
+    routeCmd('ADD,GOTO,' + w.lat.toFixed(6) + ',' + w.lon.toFixed(6) + ',' + ROUTE_WP_RADIUS_M);
   log('Rotta inviata: ' + MAP.wps.length + ' waypoint');
 }
 
@@ -905,7 +1029,7 @@ function setRoute(state, idx, n, xte, wpd){
    chiedere piu fitto non aggiunge informazione, aggiunge solo byte. */
 const BATHY_URL    = 'https://rest.emodnet-bathymetry.eu/depth_profile?geom=';
 const BATHY_STEP_M = 100;
-const BATHY_LEVELS = [2, 5, 10, 15, 20, 30, 50, 75, 100, 150, 200];
+const BATHY_LEVELS = [0, 2, 5, 10, 15, 20, 30, 50, 75, 100, 150, 200];
 const BATHY_KEY    = 'euno_bathy';
 
 let BATHY = null;   // { lat0, lon0, lat1, lon1, nRow, nCol, grid, iso }
@@ -993,22 +1117,29 @@ function bathyDepthAt(lat, lon){
 
 async function bathyDownload(){
   if (bathyBusy) return;
-  if (MAP.refLat === null){ bathyMsg('Nessun fix: non so quale zona scaricare'); return; }
+  const cv = mapCanvas();
+  if (!cv) return;
 
-  // Il riquadro e quello inquadrato adesso sul plotter.
-  const cv = document.getElementById('plot');
-  const halfW = cv.clientWidth  / 2 / MAP.scale, halfH = cv.clientHeight / 2 / MAP.scale;
-  const c  = mapViewCenterMeters();
-  const sw = mapUnproject(c.x - halfW, c.y - halfH);
-  const ne = mapUnproject(c.x + halfW, c.y + halfH);
+  // Il riquadro e quello inquadrato adesso: nessun bisogno del GPS.
+  const sw = mapScreenToGeo(0, cv.clientHeight);
+  const ne = mapScreenToGeo(cv.clientWidth, 0);
 
-  const wM = halfW * 2, hM = halfH * 2;
-  const nRow = Math.max(8, Math.min(60, Math.round(hM / BATHY_STEP_M) + 1));
+  const hM = geoDist({lat:sw.lat, lon:sw.lon}, {lat:ne.lat, lon:sw.lon});
+  const wM = geoDist({lat:sw.lat, lon:sw.lon}, {lat:sw.lat, lon:ne.lon});
+  const nRow = Math.max(8, Math.min(60,  Math.round(hM / BATHY_STEP_M) + 1));
   const nCol = Math.max(8, Math.min(120, Math.round(wM / BATHY_STEP_M) + 1));
 
-  const km = (m) => m >= 1000 ? (m/1000).toFixed(1) + ' km' : Math.round(m) + ' m';
+  // Oltre una certa larghezza il passo fra un campione e l'altro diventa piu
+  // grosso della risoluzione del DTM: si scaricherebbero byte senza guadagnare
+  // dettaglio, e le isobate verrebbero fuori a caso.
+  if (wM > 60000 || hM > 60000){
+    bathyMsg('Riquadro troppo grande (' + fmtDist(wM) + ' x ' + fmtDist(hM)
+             + '): avvicina lo zoom sotto i 60 km di lato');
+    return;
+  }
+
   if (!confirm('Scaricare le batimetriche del riquadro inquadrato?\n\n'
-             + km(wM) + ' x ' + km(hM) + ', ' + nRow + ' richieste a EMODnet.\n'
+             + fmtDist(wM) + ' x ' + fmtDist(hM) + ', ' + nRow + ' richieste a EMODnet.\n'
              + 'Serve la connessione a internet: fallo prima di uscire.\n\n'
              + 'Sono un supporto visivo, non sostituiscono le carte nautiche.'))
     return;
@@ -1045,7 +1176,7 @@ async function bathyDownload(){
   bathyBuildIso();
   bathySave();
   mapDraw();
-  bathyMsg('Batimetriche pronte: ' + km(wM) + ' x ' + km(hM)
+  bathyMsg('Batimetriche pronte: ' + fmtDist(wM) + ' x ' + fmtDist(hM)
            + (errori ? ' (' + errori + ' righe mancanti)' : '') + ' — disponibili offline');
 }
 
@@ -1094,32 +1225,31 @@ function bathyClear(){
   mapDraw();
 }
 
-/* Disegno: le isobate stanno sotto a tutto il resto, sono uno sfondo. */
-function bathyDrawOn(g, P){
+/* Le isobate stanno sotto a tutto il resto: sono uno sfondo. Lo zero e la
+   linea di costa vera del riquadro scaricato, molto piu precisa della carta
+   del mondo che sta sotto. */
+function bathyDrawOn(g){
   const b = BATHY;
-  // Senza origine della proiezione non c'e dove disegnarle: si aspetta il fix.
-  if (!b || !b.iso || !b.iso.length || MAP.refLat === null) return;
-  const step = M_PER_DEG_LAT, k = Math.cos(MAP.refLat * Math.PI / 180);
-  const toM = (lat, lon) => ({ x: (lon - MAP.refLon) * step * k,
-                               y: (lat - MAP.refLat) * step });
+  if (!b || !b.iso || !b.iso.length) return;
   for (const c of b.iso){
-    // Piu si va basso, piu la linea si fa scura: si legge il pendio a colpo d'occhio
+    const costa = (c.level === 0);
     const t = Math.min(1, c.level / 60);
-    g.strokeStyle = 'rgba(' + Math.round(120 - 60*t) + ',' + Math.round(190 - 80*t) + ',255,'
-                  + (0.30 + 0.35 * (c.level % 10 === 0 ? 1 : 0.4)).toFixed(2) + ')';
-    g.lineWidth = (c.level % 10 === 0) ? 1.6 : 1;
+    g.strokeStyle = costa
+      ? 'rgba(230,220,150,0.85)'
+      : 'rgba(' + Math.round(120 - 60*t) + ',' + Math.round(190 - 80*t) + ',255,'
+        + (0.30 + 0.35 * (c.level % 10 === 0 ? 1 : 0.4)).toFixed(2) + ')';
+    g.lineWidth = costa ? 2 : (c.level % 10 === 0 ? 1.6 : 1);
     g.beginPath();
     let etichetta = null;
     for (let s = 0; s < c.segs.length; s++){
       const q = c.segs[s];
       const a = bathyCellToGeo(b, q[0], q[1]), z = bathyCellToGeo(b, q[2], q[3]);
-      const am = toM(a.lat, a.lon), zm = toM(z.lat, z.lon);
-      const p1 = P(am.x, am.y), p2 = P(zm.x, zm.y);
+      const p1 = mapGeoToScreen(a.lat, a.lon), p2 = mapGeoToScreen(z.lat, z.lon);
       g.moveTo(p1.px, p1.py); g.lineTo(p2.px, p2.py);
       if (s === Math.floor(c.segs.length / 2)) etichetta = p1;
     }
     g.stroke();
-    if (etichetta){
+    if (etichetta && !costa){
       g.fillStyle = 'rgba(150,200,255,0.85)';
       g.font = '10px system-ui,sans-serif';
       g.fillText(c.level + ' m', etichetta.px + 3, etichetta.py - 3);
@@ -1127,8 +1257,9 @@ function bathyDrawOn(g, P){
   }
 }
 
+/* ===== DISEGNO ===== */
 function mapDraw(){
-  const cv = document.getElementById('plot');
+  const cv = mapCanvas();
   if (!cv) return;
   const dpr = window.devicePixelRatio || 1;
   const w = cv.clientWidth, h = cv.clientHeight;
@@ -1139,126 +1270,222 @@ function mapDraw(){
   const fg = getComputedStyle(document.body).color || '#e6edf3';
 
   g.clearRect(0,0,w,h);
-  g.fillStyle = 'rgba(127,127,127,0.10)';
+  g.fillStyle = 'rgba(30,60,90,0.35)';        // il mare
   g.fillRect(0,0,w,h);
 
-  // da metri a pixel: y verso l'alto = nord
-  const cx = w/2 + MAP.panX, cy = h/2 + MAP.panY;
-  const P = function(mx,my){ return { px: cx + (mx - MAP.x)*MAP.scale, py: cy - (my - MAP.y)*MAP.scale }; };
-
-  // griglia con passo tondo scelto in base alla scala
-  let step = 10;
-  let guard = 0;
-  while (step * MAP.scale < 40 && guard++ < 40) step *= 2;
-  guard = 0;
-  while (step * MAP.scale > 140 && guard++ < 40) step /= 2;
-
-  g.strokeStyle = 'rgba(127,127,127,0.25)'; g.lineWidth = 1;
-  g.beginPath();
-  const xLeft = MAP.x - cx/MAP.scale;
-  for (let mx = Math.floor(xLeft/step)*step; mx < xLeft + w/MAP.scale; mx += step){
-    const p = P(mx, MAP.y); g.moveTo(p.px,0); g.lineTo(p.px,h);
+  // La carta del mondo e precisa al chilometro: dentro il riquadro scaricato
+  // sarebbe in disaccordo visibile con la costa vera ricavata dal DTM. Si
+  // ritaglia quel rettangolo, come fa un plotter quando ha una carta di
+  // dettaglio: dove c'e il dato buono, quello grossolano non si disegna.
+  g.save();
+  if (BATHY){
+    const a = mapGeoToScreen(BATHY.lat1, BATHY.lon0);
+    const b = mapGeoToScreen(BATHY.lat0, BATHY.lon1);
+    const p = new Path2D();
+    p.rect(0, 0, w, h);
+    p.rect(a.px, a.py, b.px - a.px, b.py - a.py);
+    g.clip(p, 'evenodd');
   }
-  const yBottom = MAP.y - (h-cy)/MAP.scale;
-  for (let my = Math.floor(yBottom/step)*step; my < yBottom + h/MAP.scale; my += step){
-    const p = P(MAP.x, my); g.moveTo(0,p.py); g.lineTo(w,p.py);
+  worldDraw(g, w, h);
+  g.restore();
+
+  bathyDrawOn(g);
+
+  // Cornice del riquadro scaricato: si deve vedere dove finisce il dettaglio.
+  if (BATHY){
+    const a = mapGeoToScreen(BATHY.lat1, BATHY.lon0);
+    const b = mapGeoToScreen(BATHY.lat0, BATHY.lon1);
+    g.strokeStyle = 'rgba(140,190,255,0.35)';
+    g.lineWidth = 1; g.setLineDash([4,4]);
+    g.strokeRect(a.px, a.py, b.px - a.px, b.py - a.py);
+    g.setLineDash([]);
+  }
+
+  // Reticolo: passo tondo in gradi, scelto in base alla scala
+  const mpp = mapMPerPx();
+  const gradi = [10, 5, 2, 1, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001];
+  let passo = gradi[0];
+  for (const d of gradi){ if (d * 111320 / mpp > 60) passo = d; }
+  const a = mapScreenToGeo(0, h), b = mapScreenToGeo(w, 0);
+  g.strokeStyle = 'rgba(127,127,127,0.22)'; g.lineWidth = 1;
+  g.beginPath();
+  for (let lon = Math.ceil(a.lon/passo)*passo; lon < b.lon; lon += passo){
+    const s = mapGeoToScreen(MAP.cLat, lon); g.moveTo(s.px, 0); g.lineTo(s.px, h);
+  }
+  for (let lat = Math.ceil(a.lat/passo)*passo; lat < b.lat; lat += passo){
+    const s = mapGeoToScreen(lat, MAP.cLon); g.moveTo(0, s.py); g.lineTo(w, s.py);
   }
   g.stroke();
-
-  bathyDrawOn(g, P);
 
   // traccia percorsa
   if (MAP.track.length > 1){
     g.strokeStyle = 'rgba(90,170,255,0.9)'; g.lineWidth = 2;
     g.beginPath();
-    for (let i=0;i<MAP.track.length;i++){
-      const p = P(MAP.track[i].x, MAP.track[i].y);
-      if (i) g.lineTo(p.px,p.py); else g.moveTo(p.px,p.py);
+    for (let i = 0; i < MAP.track.length; i++){
+      const s = mapGeoToScreen(MAP.track[i].lat, MAP.track[i].lon);
+      if (i) g.lineTo(s.px, s.py); else g.moveTo(s.px, s.py);
     }
     g.stroke();
   }
 
-  // rotta fra i waypoint
+  // rotta fra i waypoint, a partire dalla barca se c'e il fix
   if (MAP.wps.length){
     g.strokeStyle = 'rgba(255,180,60,0.9)'; g.lineWidth = 2; g.setLineDash([6,4]);
     g.beginPath();
-    const s = P(MAP.x, MAP.y); g.moveTo(s.px, s.py);
-    for (let i=0;i<MAP.wps.length;i++){ const p = P(MAP.wps[i].x, MAP.wps[i].y); g.lineTo(p.px,p.py); }
+    let primo = true;
+    if (MAP.fix){ const s = mapGeoToScreen(MAP.lat, MAP.lon); g.moveTo(s.px, s.py); primo = false; }
+    for (const wp of MAP.wps){
+      const s = mapGeoToScreen(wp.lat, wp.lon);
+      if (primo){ g.moveTo(s.px, s.py); primo = false; } else g.lineTo(s.px, s.py);
+    }
     g.stroke(); g.setLineDash([]);
-    for (let i=0;i<MAP.wps.length;i++){
-      const p = P(MAP.wps[i].x, MAP.wps[i].y);
-      g.fillStyle = 'rgba(255,180,60,0.95)';
-      g.beginPath(); g.arc(p.px,p.py,6,0,6.283); g.fill();
+
+    for (let i = 0; i < MAP.wps.length; i++){
+      const s = mapGeoToScreen(MAP.wps[i].lat, MAP.wps[i].lon);
+      const sel = (i === MAP.sel);
+      // Il selezionato e piu grande e ha un anello: e anche l'area che si
+      // afferra col dito, che deve restare generosa.
+      g.fillStyle = sel ? 'rgba(255,220,120,1)' : 'rgba(255,180,60,0.95)';
+      g.beginPath(); g.arc(s.px, s.py, sel ? 9 : 6, 0, 6.283); g.fill();
+      if (sel){
+        g.strokeStyle = 'rgba(255,220,120,0.7)'; g.lineWidth = 2;
+        g.beginPath(); g.arc(s.px, s.py, 16, 0, 6.283); g.stroke();
+      }
       g.fillStyle = fg; g.font = '11px system-ui,sans-serif';
-      g.fillText(String(i+1), p.px+9, p.py-7);
+      g.fillText(String(i+1), s.px + 11, s.py - 8);
     }
   }
 
   // barca, orientata sull'heading corrente
-  const b = P(MAP.x, MAP.y);
-  const a = (typeof hdg === 'number' ? hdg : 0) * Math.PI/180;
-  g.save(); g.translate(b.px,b.py); g.rotate(a);
-  g.fillStyle = MAP.fix ? '#2ecc71' : '#888';
-  g.beginPath(); g.moveTo(0,-11); g.lineTo(7,9); g.lineTo(0,5); g.lineTo(-7,9); g.closePath(); g.fill();
-  g.restore();
+  if (MAP.fix){
+    const s = mapGeoToScreen(MAP.lat, MAP.lon);
+    const ang = (typeof hdg === 'number' ? hdg : 0) * D2R;
+    g.save(); g.translate(s.px, s.py); g.rotate(ang);
+    g.fillStyle = '#2ecc71';
+    g.beginPath(); g.moveTo(0,-11); g.lineTo(7,9); g.lineTo(0,5); g.lineTo(-7,9); g.closePath(); g.fill();
+    g.restore();
+  }
 
   // scala grafica e nord
   g.strokeStyle = fg; g.fillStyle = fg; g.lineWidth = 2; g.font = '12px system-ui,sans-serif';
-  const barPx = step * MAP.scale;
+  const tondi = [10,20,50,100,200,500,1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000];
+  let barM = tondi[0];
+  for (const d of tondi){ if (d / mpp < w * 0.35) barM = d; }
+  const barPx = barM / mpp;
   g.beginPath(); g.moveTo(12,h-16); g.lineTo(12+barPx,h-16); g.stroke();
-  g.fillText(step >= 1000 ? (step/1000)+' km' : step+' m', 12, h-22);
+  g.fillText(barM >= 1000 ? (barM/1000) + ' km' : barM + ' m', 12, h-22);
   g.fillText('N', w-18, 20);
   g.beginPath(); g.moveTo(w-14,26); g.lineTo(w-14,44); g.stroke();
 
+  // riga di stato
   const el = document.getElementById('mapInfo');
   if (el){
-    if (!MAP.fix){
-      el.textContent = 'Nessun fix GPS - posizione non disponibile';
-    } else if (MAP.wps.length){
-      const t = MAP.wps[0];
-      const dx = t.x - MAP.x, dy = t.y - MAP.y;
-      const dist = Math.hypot(dx,dy);
-      let brg = Math.atan2(dx,dy) * 180/Math.PI; if (brg<0) brg+=360;
-      const err = Math.round(((brg - (typeof hdg==='number'?hdg:0) + 540) % 360) - 180);
-      el.textContent = 'WP1: ' + (dist>=1000 ? (dist/1000).toFixed(2)+' km' : dist.toFixed(0)+' m')
-                     + ' - rotta ' + brg.toFixed(0) + '°'
-                     + ' - scarto ' + err + '°'
-                     + ' - ' + MAP.wps.length + ' waypoint';
+    const parti = [];
+    if (MAP.addMode) parti.push('Tocca la mappa per piazzare il waypoint');
+    if (MAP.fix && MAP.wps.length){
+      const me = {lat: MAP.lat, lon: MAP.lon};
+      const d = geoDist(me, MAP.wps[0]), brg = geoBrg(me, MAP.wps[0]);
+      const scarto = Math.round(((brg - (typeof hdg==='number'?hdg:0) + 540) % 360) - 180);
+      parti.push('WP1 a ' + fmtDist(d) + ', rotta ' + brg.toFixed(0) + '°, scarto ' + scarto + '°');
     } else {
-      el.textContent = 'Traccia: ' + MAP.track.length + ' punti - trascina la mappa, poi + WAYPOINT';
+      parti.push('Centro ' + MAP.cLat.toFixed(4) + '° ' + MAP.cLon.toFixed(4) + '°');
     }
+    if (MAP.wps.length) parti.push(MAP.wps.length + ' waypoint'
+      + (MAP.sel >= 0 ? ' (il ' + (MAP.sel+1) + ' e selezionato, trascinalo per spostarlo)' : ''));
+    if (!MAP.fix) parti.push('nessun fix');
+    if (MAP.fix && BATHY){
+      const dep = bathyDepthAt(MAP.lat, MAP.lon);
+      if (dep !== null) parti.push('fondale ' + (dep < 0 ? 'terra' : dep.toFixed(1) + ' m'));
+    }
+    el.textContent = parti.join(' — ');
   }
-  // Fondale sotto la barca, letto dalla griglia scaricata
-  if (el && MAP.fix && BATHY && MAP.refLat !== null){
-    const g0 = mapUnproject(MAP.x, MAP.y);
-    const d = bathyDepthAt(g0.lat, g0.lon);
-    if (d !== null) el.textContent += ' - fondale ' + (d < 0 ? 'terra' : d.toFixed(1) + ' m');
-  }
-
   const fx = document.getElementById('mapFix');
   if (fx) fx.textContent = MAP.fix ? 'fix ok' : 'no fix';
 }
 
-/* trascinamento, rotella e pizzico */
+/* ===== TOCCO =====
+   Un waypoint si afferra e si trascina; su mappa vuota il dito sposta la
+   carta. Il pulsante AGGIUNGI WP arma il tocco successivo. */
 (function(){
-  let drag=false, lx=0, ly=0, pinch=0;
+  const GRAB_PX = 22;          // quanto largo e il bersaglio di un waypoint
+  let dragWp = -1, panning = false, lx = 0, ly = 0, moved = 0, pinch = 0;
+
+  function wpAt(px, py){
+    for (let i = MAP.wps.length - 1; i >= 0; i--){
+      const s = mapGeoToScreen(MAP.wps[i].lat, MAP.wps[i].lon);
+      if (Math.hypot(s.px - px, s.py - py) <= GRAB_PX) return i;
+    }
+    return -1;
+  }
+
   function bind(){
-    const cv = document.getElementById('plot');
+    const cv = mapCanvas();
     if (!cv) { setTimeout(bind, 300); return; }
-    cv.addEventListener('pointerdown', function(e){ drag=true; lx=e.clientX; ly=e.clientY; MAP.follow=false; });
-    cv.addEventListener('pointermove', function(e){ if(!drag) return; MAP.panX += e.clientX-lx; MAP.panY += e.clientY-ly; lx=e.clientX; ly=e.clientY; mapDraw(); });
-    cv.addEventListener('pointerup',   function(){ drag=false; });
-    cv.addEventListener('pointercancel', function(){ drag=false; });
-    cv.addEventListener('wheel', function(e){ e.preventDefault(); mapZoom(e.deltaY<0 ? 1.2 : 1/1.2); }, {passive:false});
+
+    cv.addEventListener('pointerdown', function(e){
+      const r = cv.getBoundingClientRect();
+      const px = e.clientX - r.left, py = e.clientY - r.top;
+      moved = 0; lx = e.clientX; ly = e.clientY;
+
+      if (MAP.addMode){
+        const g = mapScreenToGeo(px, py);
+        MAP.wps.push({lat: g.lat, lon: g.lon});
+        MAP.sel = MAP.wps.length - 1;
+        MAP.addMode = false;
+        const b = document.getElementById('btnAddWp');
+        if (b) b.style.opacity = '';
+        mapDraw();
+        return;
+      }
+
+      const i = wpAt(px, py);
+      if (i >= 0){ dragWp = i; MAP.sel = i; cv.setPointerCapture(e.pointerId); mapDraw(); return; }
+
+      panning = true; MAP.follow = false;
+    });
+
+    cv.addEventListener('pointermove', function(e){
+      const dx = e.clientX - lx, dy = e.clientY - ly;
+      if (dragWp < 0 && !panning) return;
+      moved += Math.abs(dx) + Math.abs(dy);
+
+      if (dragWp >= 0){
+        const r = cv.getBoundingClientRect();
+        const g = mapScreenToGeo(e.clientX - r.left, e.clientY - r.top);
+        MAP.wps[dragWp] = {lat: g.lat, lon: g.lon};
+      } else if (panning){
+        MAP.cLon = mercLon(mercX(MAP.cLon) - dx / MAP.k);
+        MAP.cLat = mercLat(mercY(MAP.cLat) + dy / MAP.k);
+      }
+      lx = e.clientX; ly = e.clientY;
+      mapDraw();
+    });
+
+    function fine(e){
+      // Un tocco secco sul vuoto toglie la selezione: serve per capire quale
+      // waypoint e "quello attivo" senza dover per forza spostarne uno.
+      if (panning && moved < 6 && MAP.sel >= 0){ MAP.sel = -1; mapDraw(); }
+      dragWp = -1; panning = false;
+    }
+    cv.addEventListener('pointerup', fine);
+    cv.addEventListener('pointercancel', fine);
+
+    cv.addEventListener('wheel', function(e){
+      e.preventDefault(); mapZoom(e.deltaY < 0 ? 1.25 : 1/1.25);
+    }, {passive:false});
+
     cv.addEventListener('touchmove', function(e){
-      if (e.touches.length!==2) return;
+      if (e.touches.length !== 2) return;
       e.preventDefault();
-      const d = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
-      if (pinch) mapZoom(d/pinch);
+      const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX,
+                           e.touches[0].clientY - e.touches[1].clientY);
+      if (pinch) mapZoom(d / pinch);
       pinch = d;
     }, {passive:false});
-    cv.addEventListener('touchend', function(){ pinch=0; });
+    cv.addEventListener('touchend', function(){ pinch = 0; });
+
     bathyLoad();
+    worldLoad();
     mapDraw();
   }
   bind();
