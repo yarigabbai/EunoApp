@@ -295,6 +295,62 @@ body.day .btn-modern-ext,
 body.day .btn-modern-network {
   color: white;
 }
+/* ====== Una colonna sola sul telefono ======
+   Le griglie erano fisse a due o tre colonne: su uno schermo da 375 px
+   diventano colonnine da 165, dentro cui i pulsanti si incolonnano e i testi
+   vanno a capo ogni due parole. E il motivo per cui Setup sembrava sbordare.
+   Sotto i 560 px si impila tutto. */
+@media (max-width: 560px){
+  .grid2, .grid3, .param-grid{ grid-template-columns:1fr }
+}
+
+/* ====== Testi che non sbordano ======
+   Le etichette erano tutte .lbl: 18px, maiuscolo, con spaziatura fra le
+   lettere. Dentro una riga in flex senza min-width le scritte lunghe non
+   possono rimpicciolirsi e escono dalla scatola — si vedeva soprattutto in
+   Network. Qui si danno tre cose: la possibilita di andare a capo, la
+   possibilita di restringersi, e una misura piu adatta a un telefono. */
+.row > *, .status-box > *, .field-row > *{ min-width:0 }
+.lbl, .hint, .status-box .title{ overflow-wrap:anywhere }
+.status-box{ flex-wrap:wrap }
+.card{ overflow:hidden }
+
+.sec-title{
+  font-size:17px;font-weight:800;letter-spacing:.02em;margin-bottom:4px;
+  color:var(--text)
+}
+.hint{
+  color:var(--muted);font-size:13px;line-height:1.45;font-weight:500;
+  text-transform:none;letter-spacing:0;margin:6px 0 2px
+}
+
+/* ====== Campi di un modulo ====== */
+.field{ margin-top:14px }
+.field > label{
+  display:block;color:var(--muted);font-size:13px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px
+}
+.field input{
+  width:100%;box-sizing:border-box;padding:11px 12px;font-size:16px;
+  background:#0a1626;color:var(--text);border:1px solid var(--navy-3);border-radius:10px
+}
+.field input:focus{ outline:none;border-color:#3b82f6 }
+.field-row{ display:flex;gap:8px;align-items:stretch }
+.field-row input{ flex:1 1 auto }
+.field-row .btn-modern-cal{ flex:0 0 auto;white-space:nowrap }
+
+/* ====== Elenco delle reti trovate ====== */
+.ssid-list{ display:flex;flex-direction:column;gap:6px;margin-top:10px }
+.ssid-item{
+  display:flex;justify-content:space-between;align-items:center;gap:10px;
+  width:100%;padding:11px 12px;border-radius:10px;text-align:left;
+  background:#0a1626;border:1px solid var(--navy-3);color:var(--text);
+  font-size:15px;font-weight:600;text-transform:none;letter-spacing:0
+}
+.ssid-item:active{ background:#12233c }
+.ssid-name{ overflow:hidden;text-overflow:ellipsis;white-space:nowrap }
+.ssid-rssi{ color:var(--muted);font-size:12px;white-space:nowrap;flex:0 0 auto }
+
 /* ====== Scan / status boxes ====== */
 .scan-panel{border:1px dashed var(--navy-3);border-radius:var(--radius);padding:14px;margin-top:10px;background:#0d2035}
 .status-box{
@@ -388,28 +444,32 @@ body.day .btn-modern-network {
               <button class="btn-modern-cal" onclick="cgps()">CAL C-GPS</button>
               <button class="btn-modern-cal" onclick="extbrgOn()">EXT BRG ON</button>
               <button class="btn-modern-cal" onclick="extbrgOff()">EXT BRG OFF</button>
+            </div>
+
             <!-- Giro di bussola: misura la deviazione del sistema installato
                  usando il COG del GPS come riferimento. Sostituisce la
-                 vecchia tabella ADV a 72 punti. -->
-            <div class="lbl" style="opacity:.9;margin-top:10px">Compass swing (deviation)</div>
+                 vecchia tabella ADV a 72 punti.
+                 Questo blocco stava dentro la riga dei pulsanti qui sopra: il
+                 </div> mancante lo rendeva un elemento flex, e finiva
+                 schiacciato in una colonnina stretta sulla destra. -->
+            <div class="sec-title" style="margin-top:14px">Giro di bussola</div>
             <div class="row" style="gap:6px;flex-wrap:wrap">
               <button class="btn-modern-cal" onclick="swingStart()">SWING START</button>
               <button class="btn-modern-cal" onclick="swingStop()">SWING STOP</button>
               <button class="btn-modern-cal" onclick="swingClear()">CLEAR</button>
             </div>
-            <div id="swingStatus" class="lbl" style="opacity:.8;margin-top:6px">—</div>
-            </div>
+            <div id="swingStatus" class="hint" style="font-size:14px">—</div>
             <!-- Registrazione delle prove in mare: i quattro heading su CSV,
                  da riguardare a terra invece di giudicarli a occhio a bordo. -->
-            <div class="lbl" style="opacity:.9;margin-top:10px">Sea-trial log</div>
+            <div class="sec-title" style="margin-top:14px">Registrazione di bordo</div>
             <div class="row" style="gap:6px;flex-wrap:wrap">
               <button class="btn-modern-cal" onclick="logStart()">LOG START</button>
               <button class="btn-modern-cal" onclick="logStop()">LOG STOP</button>
               <button class="btn-modern-cal" onclick="logList()">FILES</button>
             </div>
-            <div id="logStatus" class="lbl" style="opacity:.8;margin-top:6px">—</div>
-            <div id="logFiles" class="lbl" style="opacity:.9;margin-top:6px"></div>
-            <div class="lbl" style="opacity:.9">Commands: $PEUNO,CMD,...</div>
+            <div id="logStatus" class="hint" style="font-size:14px">—</div>
+            <div id="logFiles" class="hint"></div>
+            <div class="hint">Comandi: $PEUNO,CMD,…</div>
           </div>
         </div>
 
@@ -502,7 +562,7 @@ body.day .btn-modern-network {
 <div class="row" style="justify-content:center;margin-top:16px">
   <button class="btn-modern-apply" onclick="applyParams()">APPLY PARAMETERS</button>
 </div>
-        <div class="lbl" style="opacity:.9;margin-top:8px">Forward: $PEUNO,CMD,SET,key=value</div>
+        <div class="hint">I parametri si mandano anche a mano: $PEUNO,CMD,SET,chiave=valore</div>
       </div>
     </section>
 
@@ -528,12 +588,12 @@ body.day .btn-modern-network {
           <button class="btn-modern-cal" onclick="mapClearWps()">TOGLI TUTTI</button>
           <button class="btn-modern-cal" onclick="mapClearTrack()">PULISCI TRACCIA</button>
         </div>
-        <div class="lbl" style="opacity:.6;margin-top:6px;font-size:12px">
+        <div class="hint">
           Trascina per spostare la carta, pizzica per lo zoom. Un waypoint si
           afferra col dito e si sposta; toccalo per selezionarlo.
         </div>
 
-        <div id="mapInfo" class="lbl" style="opacity:.9;margin-top:8px">—</div>
+        <div id="mapInfo" class="hint" style="font-size:14px;margin-top:8px">—</div>
 
         <!-- La rotta viene compilata in una coda di istruzioni e caricata sulla
              centralina: da quel momento il telefono si puo spegnere. -->
@@ -545,7 +605,7 @@ body.day .btn-modern-network {
           <button class="btn-modern-cal" onclick="routeCmd('SKIP')">SALTA WP</button>
           <button class="btn-modern-cal" onclick="routeCmd('STOP')">ANNULLA</button>
         </div>
-        <div id="routeInfo" class="lbl" style="opacity:.9;margin-top:8px">Nessuna rotta a bordo</div>
+        <div id="routeInfo" class="hint" style="font-size:14px;margin-top:8px">Nessuna rotta a bordo</div>
 
         <!-- Isobate calcolate dal DTM EMODnet e tenute sul telefono: si
              scaricano con la connessione, poi si disegnano offline. -->
@@ -553,8 +613,8 @@ body.day .btn-modern-network {
           <button class="btn-modern-cal" onclick="bathyDownload()">SCARICA BATIMETRICHE</button>
           <button class="btn-modern-cal" onclick="bathyClear()">CANCELLA</button>
         </div>
-        <div id="bathyInfo" class="lbl" style="opacity:.9;margin-top:8px">Nessuna batimetrica in memoria</div>
-        <div class="lbl" style="opacity:.6;margin-top:6px;font-size:12px">
+        <div id="bathyInfo" class="hint" style="font-size:14px;margin-top:8px">Nessuna batimetrica in memoria</div>
+        <div class="hint">
           Supporto visivo. Non sostituisce le carte nautiche ufficiali.
         </div>
       </div>
@@ -562,29 +622,44 @@ body.day .btn-modern-network {
     <!-- ===== PAGE 4: NETWORK ===== -->
     <section class="slide">
       <div class="card">
-        <div class="row">
-          <label class="lbl">OP SSID</label><input id="ssid" class="w120" type="text" placeholder="OpenPlotter-AP">
-          <label class="lbl">OP PASS</label><input id="pass" class="w120" type="password" placeholder="password">
-          <button class="btn-modern-cal" onclick="saveNet()">SAVE & REBOOT STA</button>
+        <div class="sec-title">Rete a cui collegare la centralina</div>
+        <div class="hint">
+          Serve perché possa raggiungere internet da sola — per esempio l'hotspot
+          del telefono, quando le chiedi di aggiornarsi. Non è la rete con cui ti
+          colleghi a lei: quella è EunoAutopilot e resta sempre accesa.
         </div>
-        <div class="lbl" style="opacity:.9;margin-top:8px">POST /api/net with ssid, pass</div>
 
-    
+        <div class="field">
+          <label for="ssid">Rete Wi-Fi</label>
+          <div class="field-row">
+            <input id="ssid" type="text" placeholder="nome della rete" autocapitalize="off" autocorrect="off">
+            <button class="btn-modern-cal" onclick="netScan()">CERCA</button>
+          </div>
+        </div>
+        <div id="ssidList" class="ssid-list"></div>
+        <div id="scanLbl" class="hint"></div>
+
+        <div class="field">
+          <label for="pass">Password</label>
+          <input id="pass" type="password" placeholder="password della rete">
+        </div>
+
+        <button class="btn-modern-cal" style="margin-top:10px" onclick="saveNet()">SALVA RETE</button>
 
         <!-- BT RING status box -->
         <div class="status-box" id="ringBox">
-          <div class="title">BT RING</div>
+          <div class="title">Anello BT</div>
           <div class="status-pill">
             <span id="ringLed" class="led-dot led-err blink" aria-label="Disconnected"></span>
-            <span id="ringText" class="lbl" style="text-transform:none">Disconnected</span>
+            <span id="ringText" class="hint" style="margin:0">non collegato</span>
           </div>
         </div>
       <!-- numero di satelliti -->
         <div class="status-box">
-          <div class="title">GPS Satellites</div>
+          <div class="title">Satelliti GPS</div>
           <div class="status-pill">
-            <span class="lbl" style="text-transform:none">Count: </span>
-            <span id="sats" class="val" style="font-size:18px">—</span>
+            <span class="hint" style="margin:0">visti</span>
+            <span id="sats" class="val" style="font-size:20px">—</span>
           </div>
         </div>
 
@@ -592,8 +667,8 @@ body.day .btn-modern-network {
 <div class="status-box" id="fwBox" style="margin-top:12px">
   <div class="title">Firmware</div>
   <div class="stack">
-    <div class="lbl">Current: <span id="fw_local">—</span></div>
-    <div class="lbl">Latest: <span id="fw_online">—</span></div>
+    <div class="hint" style="margin:0">A bordo <b id="fw_local" style="color:var(--text)">—</b></div>
+    <div class="hint" style="margin:0">Pubblicata <b id="fw_online" style="color:var(--text)">—</b></div>
   </div>
   <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:6px">
     <button class="btn-modern-cal" onclick="checkFw()">CONTROLLA</button>
@@ -603,7 +678,7 @@ body.day .btn-modern-network {
     <button class="btn-modern-cal" onclick="uploadFw()">DA FILE</button>
   </div>
   <div class="lbl" id="fw_stato" style="opacity:.9;margin-top:8px">—</div>
-  <div class="lbl" style="opacity:.6;margin-top:6px;font-size:12px">
+  <div class="hint">
     SCARICA vuole internet, INSTALLA vuole la rete della centralina: sono due
     momenti diversi. DA HOTSPOT fa scaricare tutto a lei.
   </div>
@@ -1550,11 +1625,14 @@ function extbrgOff(){ send('$PEUNO,CMD,EXTBRG=OFF'); }
 async function saveNet(){
   const ssid=document.getElementById('ssid').value.trim();
   const pass=document.getElementById('pass').value.trim();
-  if(!ssid||!pass){ log('Missing ssid/pass'); return; }
+  if(!ssid||!pass){ log('Servono nome della rete e password'); return; }
   try{
-    const res = await fetch('/api/net',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid,pass})});
-    if(!res.ok){ log('HTTP '+res.status); return; }
-    log('Saved. Rebooting STA...');
+    // URL assoluta: relativa finiva su https://localhost, che risponde 200 con
+    // la pagina stessa - quindi compariva "salvato" senza che nulla lo fosse.
+    const res = await fetch(apiBase() + '/api/net', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({ssid,pass})});
+    if(!res.ok){ log('La centralina ha risposto ' + res.status); return; }
+    log('Rete salvata: ' + ssid);
   }catch(e){ log('NET save error '+e.message); }
 }
 
@@ -1733,47 +1811,89 @@ function setRingStatus(connected){
   const txt = document.getElementById('ringText');
   if(!led||!txt) return;
   led.classList.remove('led-ok','led-err','blink');
-  if(connected){ led.classList.add('led-ok'); txt.textContent='Connected'; }
-  else{ led.classList.add('led-err','blink'); txt.textContent='Disconnected'; }
+  if(connected){ led.classList.add('led-ok'); txt.textContent='collegato'; }
+  else{ led.classList.add('led-err','blink'); txt.textContent='non collegato'; }
 }
 // call this later from telemetry parser when disponibile:
 //   setRingStatus(true/false);
 
-/* ===== Network scan (optional /api/scan) ===== */
-(function(){
-  const btnScan  = document.getElementById('scanBtn');
-  const lblScan  = document.getElementById('scanLbl');
-  const selSSID  = document.getElementById('ssidSelect');
-  const btnUse   = document.getElementById('ssidUseBtn');
-  const inputSSID= document.getElementById('ssid');
+/* ===== RETI WI-FI =====
+   La centralina sa gia scandire (/api/scan), ma il pannello per usarla non e
+   mai esistito: il codice cercava scanBtn, ssidSelect e compagnia, che nel
+   markup non c'erano. E le chiamate erano a URL relative, quindi dentro l'app
+   finivano su https://localhost invece che sulla centralina — e localhost
+   risponde 200 con la pagina stessa, per cui "salvato" compariva anche quando
+   non era stato salvato niente. E il motivo per cui la centralina continuava a
+   dire NESSUNA_RETE dopo aver premuto SALVA. */
+let scanTimer = null;
 
-  function escapeHtml(s){ return (s||"").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])) }
+function scanMsg(s){
+  const el = document.getElementById('scanLbl');
+  if (el) el.textContent = s;
+}
 
-  async function pollScan(){
-    try{
-      const res = await fetch("/api/scan",{cache:"no-store"});
-      if (res.status==202){ if(lblScan) lblScan.textContent="Scanning..."; setTimeout(pollScan,600); return; }
-      if (!res.ok) throw new Error("HTTP "+res.status);
-      const list = await res.json();
-      list.sort((a,b)=>(b.rssi||-999)-(a.rssi||-999));
-      const seen=new Set(), uniq=[]; for(const ap of list){ if(ap&&ap.ssid&&!seen.has(ap.ssid)){ seen.add(ap.ssid); uniq.push(ap);} }
-      if(selSSID){
-        selSSID.innerHTML='<option value="">—</option>'+uniq.map(ap=>`<option value="${escapeHtml(ap.ssid)}">${escapeHtml(ap.ssid)} (${ap.rssi||'?' } dBm)</option>`).join('');
-      }
-      if(lblScan) lblScan.textContent="Scan complete";
-    }catch(e){ if(lblScan) lblScan.textContent="Scan error"; }
+async function netScan(){
+  const box = document.getElementById('ssidList');
+  if (scanTimer){ clearTimeout(scanTimer); scanTimer = null; }
+  scanMsg('Cerco le reti…');
+  if (box) box.innerHTML = '';
+  try {
+    await fetch(apiBase() + '/api/scan', { method: 'POST' });
+    netScanPoll(0);
+  } catch(e){
+    scanMsg('Centralina non raggiungibile: sei collegato alla sua rete?');
   }
-  btnScan && btnScan.addEventListener('click', async ()=>{
-    if(lblScan) lblScan.textContent="Starting scan…";
-    try{ await fetch("/api/scan",{method:'POST'}); pollScan(); }catch(e){ if(lblScan) lblScan.textContent="Start error"; }
-  });
-  btnUse && btnUse.addEventListener('click', ()=>{
-    const chosen = selSSID?selSSID.value:"";
-    inputSSID.value = chosen;
-    if(lblScan) lblScan.textContent = chosen?`SSID copied: ${chosen}`:'';
-  });
-  selSSID && selSSID.addEventListener('change', ()=>{ inputSSID.value = selSSID.value||""; });
-})();
+}
+
+async function netScanPoll(giri){
+  try {
+    const res = await fetch(apiBase() + '/api/scan', { cache: 'no-store' });
+    if (res.status === 202){
+      // La scansione dura qualche secondo: si riprova, ma non all'infinito.
+      if (giri > 25){ scanMsg('La scansione non finisce, riprova'); return; }
+      scanMsg('Cerco le reti' + '.'.repeat(1 + (giri % 3)));
+      scanTimer = setTimeout(() => netScanPoll(giri + 1), 600);
+      return;
+    }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+
+    const lista = await res.json();
+    lista.sort((a, b) => (b.rssi || -999) - (a.rssi || -999));
+    const viste = new Set(), reti = [];
+    for (const ap of lista){
+      if (ap && ap.ssid && !viste.has(ap.ssid)){ viste.add(ap.ssid); reti.push(ap); }
+    }
+    netScanRender(reti);
+    scanMsg(reti.length ? reti.length + ' reti trovate — toccane una'
+                        : 'Nessuna rete trovata');
+  } catch(e){
+    scanMsg('Ricerca non riuscita: ' + e.message);
+  }
+}
+
+/* Un elenco toccabile invece di un menu a tendina: su un telefono, in barca,
+   una lista di bersagli grandi si usa meglio. La potenza del segnale si legge
+   a colpo d'occhio, che e quello che serve per scegliere. */
+function netScanRender(reti){
+  const box = document.getElementById('ssidList');
+  if (!box) return;
+  box.innerHTML = '';
+  for (const ap of reti){
+    const r = ap.rssi || -100;
+    const tacche = r > -60 ? '▂▄▆█' : r > -70 ? '▂▄▆' : r > -80 ? '▂▄' : '▂';
+    const b = document.createElement('button');
+    b.className = 'ssid-item';
+    b.innerHTML = '<span class="ssid-name"></span><span class="ssid-rssi">'
+                + tacche + ' ' + r + ' dBm</span>';
+    b.querySelector('.ssid-name').textContent = ap.ssid;   // niente HTML dall'esterno
+    b.onclick = () => {
+      document.getElementById('ssid').value = ap.ssid;
+      document.getElementById('pass').focus();
+      scanMsg('Rete scelta: ' + ap.ssid);
+    };
+    box.appendChild(b);
+  }
+}
 
 /* ===== AGGIORNAMENTO DEL FIRMWARE =====
    Il telefono attaccato all'AP della centralina non ha internet — da quando
@@ -2036,7 +2156,7 @@ window.addEventListener('load', init);
    ferma a 1.2.7 mentre version.json diceva 1.2.8, quindi a ogni avvio l'app
    proponeva di installare un APK di ottobre — piu vecchio di tutto quello che
    c'e adesso. Il confronto ora e numerico e rifiuta i passi indietro. */
-const CURRENT_APP_VERSION = "1.3.2";
+const CURRENT_APP_VERSION = "1.3.5";
 
 function versioneNuova(remota, locale){
   const n = s => String(s).split(/[.\-+]/).map(x => parseInt(x, 10) || 0);
