@@ -988,8 +988,10 @@ function worldDraw(g, w, h){
   const a = mapScreenToGeo(0, h), b = mapScreenToGeo(w, 0);   // angoli della vista
   const vx0 = a.lon, vx1 = b.lon, vy0 = a.lat, vy1 = b.lat;
 
-  g.fillStyle   = 'rgba(120,120,110,0.30)';
-  g.strokeStyle = 'rgba(180,180,170,0.55)';
+  // Verde spento per la terra e blu per il mare, come su una carta: il grigio
+  // di prima non diceva da che parte stare.
+  g.fillStyle   = 'rgba(96,122,74,0.45)';
+  g.strokeStyle = 'rgba(190,205,160,0.65)';
   g.lineWidth = 1;
   for (const f of set){
     const bb = f.b;
@@ -1278,6 +1280,7 @@ async function bathyDownload(){
 
   BATHY = { lat0: sw.lat, lon0: sw.lon, lat1: ne.lat, lon1: ne.lon,
             nRow: nRow, nCol: nCol, grid: grid, iso: null };
+  BATHY.tela = null;
   bathyBuildIso();
   bathySave();
   mapDraw();
@@ -1330,9 +1333,66 @@ function bathyClear(){
   mapDraw();
 }
 
-/* Le isobate stanno sotto a tutto il resto: sono uno sfondo. Lo zero e la
-   linea di costa vera del riquadro scaricato, molto piu precisa della carta
-   del mondo che sta sotto. */
+/* Colore del fondale: dal celeste della secca al blu cupo del profondo.
+   La progressione non e lineare ma sulla radice, perche i primi venti metri
+   sono quelli che contano - fra 60 e 80 metri non cambia niente per chi pesca,
+   fra 2 e 5 cambia tutto. Sotto lo zero e terra.
+
+   Si dipinge una volta sola su una tela fuori schermo grande quanto la
+   griglia, poi si stira: ridisegnare settemila celle a ogni spostamento della
+   mappa non avrebbe senso. */
+function bathyTinta(d){
+  if (isNaN(d)) return null;
+  if (d < 0) return [96, 122, 74];                       // terra
+  const t = Math.min(1, Math.sqrt(Math.max(0, d) / 80));
+  return [Math.round(150 - 140 * t),
+          Math.round(215 - 170 * t),
+          Math.round(235 - 140 * t)];
+}
+
+function bathyPaintCache(){
+  const b = BATHY;
+  if (!b) return null;
+  if (b.tela) return b.tela;
+  const c = document.createElement('canvas');
+  c.width = b.nCol; c.height = b.nRow;
+  const g = c.getContext('2d');
+  const img = g.createImageData(b.nCol, b.nRow);
+  for (let i = 0; i < b.nRow; i++){
+    // La riga 0 della griglia e la piu a sud, la tela ha lo zero in alto.
+    const riga = b.nRow - 1 - i;
+    for (let j = 0; j < b.nCol; j++){
+      const col = bathyTinta(b.grid[i * b.nCol + j]);
+      const k = (riga * b.nCol + j) * 4;
+      if (!col){ img.data[k+3] = 0; continue; }           // buco: si vede il fondo
+      img.data[k] = col[0]; img.data[k+1] = col[1]; img.data[k+2] = col[2];
+      img.data[k+3] = 235;
+    }
+  }
+  g.putImageData(img, 0, 0);
+  b.tela = c;
+  return c;
+}
+
+function bathyPaint(g){
+  const b = BATHY;
+  if (!b) return;
+  const tela = bathyPaintCache();
+  if (!tela) return;
+  const a = mapGeoToScreen(b.lat1, b.lon0);   // angolo alto-sinistra
+  const z = mapGeoToScreen(b.lat0, b.lon1);   // angolo basso-destra
+  const w = z.px - a.px, h = z.py - a.py;
+  if (w <= 0 || h <= 0) return;
+  // Il riquadro e alto al massimo 60 km: dentro, la deformazione di Mercatore
+  // e sotto il pixel, quindi si puo stirare l'immagine in un colpo solo.
+  g.save();
+  g.imageSmoothingEnabled = true;
+  g.drawImage(tela, a.px, a.py, w, h);
+  g.restore();
+}
+
+/* Le isobate stanno sopra al colore del fondale. Lo zero e la linea di costa
+   vera del riquadro scaricato, molto piu precisa della carta del mondo. */
 function bathyDrawOn(g){
   const b = BATHY;
   if (!b || !b.iso || !b.iso.length) return;
@@ -1375,7 +1435,7 @@ function mapDraw(){
   const fg = getComputedStyle(document.body).color || '#e6edf3';
 
   g.clearRect(0,0,w,h);
-  g.fillStyle = 'rgba(30,60,90,0.35)';        // il mare
+  g.fillStyle = '#123048';                    // il mare fuori dai riquadri noti
   g.fillRect(0,0,w,h);
 
   // La carta del mondo e precisa al chilometro: dentro il riquadro scaricato
@@ -1394,6 +1454,7 @@ function mapDraw(){
   worldDraw(g, w, h);
   g.restore();
 
+  bathyPaint(g);
   bathyDrawOn(g);
 
   // Cornice del riquadro scaricato: si deve vedere dove finisce il dettaglio.
@@ -2156,7 +2217,7 @@ window.addEventListener('load', init);
    ferma a 1.2.7 mentre version.json diceva 1.2.8, quindi a ogni avvio l'app
    proponeva di installare un APK di ottobre — piu vecchio di tutto quello che
    c'e adesso. Il confronto ora e numerico e rifiuta i passi indietro. */
-const CURRENT_APP_VERSION = "1.3.5";
+const CURRENT_APP_VERSION = "1.3.6";
 
 function versioneNuova(remota, locale){
   const n = s => String(s).split(/[.\-+]/).map(x => parseInt(x, 10) || 0);
