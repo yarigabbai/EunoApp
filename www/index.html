@@ -595,10 +595,17 @@ body.day .btn-modern-network {
     <div class="lbl">Current: <span id="fw_local">—</span></div>
     <div class="lbl">Latest: <span id="fw_online">—</span></div>
   </div>
-  <div class="row" style="margin-top:8px">
-    <button class="btn-modern-cal" onclick="checkFw()">Check Update</button>
-    <button class="btn-modern-cal" onclick="uploadFw()">Manual Upload</button>
-    <button class="btn-modern-cal" onclick="autoUpdate()">Auto Online</button>
+  <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:6px">
+    <button class="btn-modern-cal" onclick="checkFw()">CONTROLLA</button>
+    <button class="btn-modern-cal" onclick="fwPrefetch(false)">SCARICA</button>
+    <button class="btn-modern-cal" onclick="fwInstall()">INSTALLA</button>
+    <button class="btn-modern-cal" onclick="fwSelfUpdate()">DA HOTSPOT</button>
+    <button class="btn-modern-cal" onclick="uploadFw()">DA FILE</button>
+  </div>
+  <div class="lbl" id="fw_stato" style="opacity:.9;margin-top:8px">—</div>
+  <div class="lbl" style="opacity:.6;margin-top:6px;font-size:12px">
+    SCARICA vuole internet, INSTALLA vuole la rete della centralina: sono due
+    momenti diversi. DA HOTSPOT fa scaricare tutto a lei.
   </div>
   <input type="file" id="fwFile" accept=".bin" style="display:none">
 </div>
@@ -1762,91 +1769,188 @@ function setRingStatus(connected){
   selSSID && selSSID.addEventListener('change', ()=>{ inputSSID.value = selSSID.value||""; });
 })();
 
-/* ===== OTA Management ===== */
-/* ===== OTA / Firmware Check ===== */
-/* ===== CHECK VERSION ===== */
-/* ===== CHECK VERSION (solo mostra versioni) ===== */
-async function checkFw(){
+/* ===== AGGIORNAMENTO DEL FIRMWARE =====
+   Il telefono attaccato all'AP della centralina non ha internet — da quando
+   rispondiamo al controllo di connettivita di Android non passa nemmeno ai
+   dati mobili — quindi "scarico il firmware e lo installo" in un colpo solo
+   non puo funzionare. Si separa in due tempi:
+
+     1. all'avvio, quando l'app ha internet (casa, dati mobili), scarica il
+        binario e se lo tiene da parte in IndexedDB;
+     2. quando ci si collega alla centralina, lo carica su /update.
+
+   Fra i due momenti puo passare un giorno: il binario resta li.
+
+   La terza via, per chi non vuole aspettare l'app, e che sia la centralina a
+   scaricarsi l'aggiornamento da sola dall'hotspot del telefono:
+   $PEUNO,CMD,OTA=NOW. Vedi euno_ota.h. */
+const FW_MANIFEST = 'https://raw.githubusercontent.com/yarigabbai/eunoupdate/main/firmware.json';
+const FW_DB = 'euno_fw';
+
+function fwMsg(s){
+  const el = document.getElementById('fw_stato');
+  if (el) el.textContent = s;
+  log(s);
+}
+
+/* IndexedDB e non localStorage: il binario e un megabyte e mezzo, e come
+   stringa base64 non ci starebbe. Qui si salva il Blob com'e. */
+function fwDb(){
+  return new Promise((ok, no) => {
+    const r = indexedDB.open(FW_DB, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('bin');
+    r.onsuccess = () => ok(r.result);
+    r.onerror   = () => no(r.error);
+  });
+}
+async function fwPut(chiave, valore){
+  const db = await fwDb();
+  return new Promise((ok, no) => {
+    const t = db.transaction('bin', 'readwrite');
+    t.objectStore('bin').put(valore, chiave);
+    t.oncomplete = () => ok();
+    t.onerror = () => no(t.error);
+  });
+}
+async function fwGet(chiave){
+  const db = await fwDb();
+  return new Promise((ok, no) => {
+    const t = db.transaction('bin', 'readonly');
+    const r = t.objectStore('bin').get(chiave);
+    r.onsuccess = () => ok(r.result);
+    r.onerror   = () => no(r.error);
+  });
+}
+
+/* Le richieste verso internet passano da CapacitorHttp quando c'e: la WebView
+   gira su https://localhost e non tutti i server rispondono con gli header
+   CORS. Per il binario serve pero un Blob, e CapacitorHttp restituisce base64:
+   si converte. */
+async function fwFetchJson(url){
+  const P = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.CapacitorHttp;
+  if (P){
+    const r = await P.get({ url: url, headers: { Accept: 'application/json' } });
+    if (r.status && r.status >= 400) throw new Error('HTTP ' + r.status);
+    return (typeof r.data === 'string') ? JSON.parse(r.data) : r.data;
+  }
+  const r = await fetch(url, { cache: 'no-store' });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return await r.json();
+}
+async function fwFetchBlob(url){
+  const P = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.CapacitorHttp;
+  if (P){
+    const r = await P.get({ url: url, responseType: 'blob' });
+    if (r.status && r.status >= 400) throw new Error('HTTP ' + r.status);
+    const b64 = (typeof r.data === 'string') ? r.data : '';
+    const bin = atob(b64);
+    const buf = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    return new Blob([buf], { type: 'application/octet-stream' });
+  }
+  const r = await fetch(url, { cache: 'no-store' });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return await r.blob();
+}
+
+/* Scarica il binario e lo mette da parte. Va chiamata quando c'e internet:
+   all'avvio dell'app, oppure a mano dal pulsante. */
+async function fwPrefetch(silenzioso){
   try {
-    // 1️⃣ Leggi versione locale dal tuo ESP
-const local = await fetch(window.location.origin + '/api/fw_version', { cache: 'no-store' })
-      .then(r => r.text());
-    const fwLocal = (local || '').trim();
-    document.getElementById('fw_local').textContent = fwLocal;
-    log('Local firmware: ' + fwLocal);
+    const man = await fwFetchJson(FW_MANIFEST);
+    if (!man.latest || !man.url) throw new Error('manifest incompleto');
+    document.getElementById('fw_online').textContent = man.latest;
 
-    // 2️⃣ Leggi versione online dal manifest remoto
-    const manifestUrl = 'https://eunosail.com/firmware/manifest.json';
-    const manifest = await fetch(manifestUrl, { cache: 'no-store' })
-      .then(r => r.json());
-    const fwOnline = manifest.latest || '—';
-    document.getElementById('fw_online').textContent = fwOnline;
+    const gia = await fwGet('meta');
+    if (gia && gia.versione === man.latest){
+      fwMsg('Firmware ' + man.latest + ' gia pronto da installare');
+      return true;
+    }
 
-    // 3️⃣ Log confronto
-    if (fwLocal !== fwOnline)
-      log('🟡 New version available online: ' + fwOnline);
-    else
-      log('✅ Firmware is already up to date.');
-  } catch (e) {
-    log('❌ Check version failed: ' + e.message);
-    document.getElementById('fw_online').textContent = '—';
+    fwMsg('Scarico il firmware ' + man.latest + '…');
+    const blob = await fwFetchBlob(man.url);
+    if (blob.size < 100000) throw new Error('binario troppo piccolo: ' + blob.size + ' byte');
+
+    await fwPut('bin', blob);
+    await fwPut('meta', { versione: man.latest, byte: blob.size, quando: Date.now() });
+    fwMsg('Firmware ' + man.latest + ' pronto: collegati alla centralina e premi INSTALLA');
+    return true;
+  } catch(e){
+    if (!silenzioso) fwMsg('Scaricamento firmware non riuscito: ' + e.message);
+    return false;
   }
 }
 
+/* Carica sulla centralina il binario messo da parte. Qui internet non serve:
+   si parla solo con 192.168.4.1. */
+async function fwInstall(){
+  try {
+    const meta = await fwGet('meta');
+    const blob = await fwGet('bin');
+    if (!blob || !meta){ fwMsg('Nessun firmware da parte: premi SCARICA quando hai internet'); return; }
 
+    const locale = await fwLocale();
+    if (!confirm('Installare il firmware ' + meta.versione + ' sulla centralina?\n\n'
+               + 'Adesso a bordo c\'e ' + (locale || 'una versione ignota') + '.\n'
+               + 'La centralina si riavvia: non farlo mentre stai navigando.')) return;
 
+    fwMsg('Carico ' + Math.round(meta.byte/1024) + ' kB sulla centralina…');
+    const form = new FormData();
+    form.append('update', blob, 'firmware.bin');
+    const res = await fetch(apiBase() + '/update', { method: 'POST', body: form });
+    const txt = await res.text();
+    fwMsg('Centralina: ' + txt.trim());
+  } catch(e){
+    fwMsg('Installazione non riuscita: ' + e.message);
+  }
+}
 
+async function fwLocale(){
+  try {
+    const r = await fetch(apiBase() + '/api/fw_version', { cache: 'no-store' });
+    const v = (await r.text()).trim();
+    const el = document.getElementById('fw_local');
+    if (el) el.textContent = v;
+    return v;
+  } catch(e){
+    return '';
+  }
+}
 
+/* Mostra le versioni: quella a bordo e quella pubblicata. */
+async function checkFw(){
+  const locale = await fwLocale();
+  if (!locale) fwMsg('Centralina non raggiungibile: sei collegato alla sua rete?');
+  await fwPrefetch(false);
+}
+
+/* Caricamento a mano di un .bin scelto dal telefono: e il piano C, quello che
+   funziona anche se manifest e internet non collaborano. */
 function uploadFw(){ document.getElementById('fwFile').click(); }
 document.getElementById('fwFile').addEventListener('change', async (ev)=>{
   const f = ev.target.files[0];
-  if(!f){ log('No file selected'); return; }
-  log('Uploading '+f.name+'...');
+  if(!f){ return; }
+  if(!confirm('Installare ' + f.name + ' sulla centralina? Si riavvia.')) return;
+  fwMsg('Carico ' + f.name + '…');
   const form = new FormData(); form.append('update', f);
   try{
-    const res = await fetch('/update',{method:'POST',body:form});
-    const txt = await res.text(); log(txt);
-  }catch(e){ log('Upload failed: '+e.message); }
+    const res = await fetch(apiBase() + '/update', {method:'POST', body:form});
+    fwMsg('Centralina: ' + (await res.text()).trim());
+  }catch(e){ fwMsg('Caricamento non riuscito: ' + e.message); }
 });
 
-/* ===== AUTO UPDATE (scarica e installa se più recente) ===== */
-async function autoUpdate(){
-  try {
-    // 1️⃣ Ottieni versione locale
-    const local = await fetch('/api/fw_version', { cache: 'no-store' })
-      .then(r => r.text());
-    const fwLocal = (local || '').trim();
-    log('Local firmware: ' + fwLocal);
-
-    // 2️⃣ Ottieni manifest online
-    const manifestUrl = 'https://eunosail.com/firmware/manifest.json';
-    const manifest = await fetch(manifestUrl, { cache: 'no-store' }).then(r => r.json());
-    const fwOnline = manifest.latest || '—';
-    const fwUrl = manifest.url;
-
-    // 3️⃣ Se aggiornato, interrompi
-    if (fwLocal === fwOnline) {
-      log('✅ Firmware is already up to date.');
-      return;
-    }
-
-    log('⬇️ Downloading new firmware: ' + fwOnline);
-    const bin = await fetch(fwUrl);
-    if (!bin.ok) throw new Error('Download failed: ' + bin.status);
-    const data = await bin.blob();
-
-    // 4️⃣ Invia OTA all’ESP
-    const form = new FormData();
-    form.append('update', data, fwUrl.split('/').pop());
-    const res = await fetch('/update', { method: 'POST', body: form });
-    const txt = await res.text();
-
-    log('✅ OTA update complete: ' + txt);
-  } catch (e) {
-    log('❌ Auto update failed: ' + e.message);
-  }
+/* Chiede alla centralina di aggiornarsi da sola. Le serve una rete con
+   internet: si imposta l'hotspot del telefono nella pagina Network. */
+function fwSelfUpdate(){
+  if (!confirm('Chiedere alla centralina di aggiornarsi da sola?\n\n'
+             + 'Deve poter raggiungere internet: imposta prima l\'hotspot del telefono '
+             + 'come rete nella pagina Network. La centralina si riavvia a fine lavoro.')) return;
+  send('$PEUNO,CMD,OTA=NOW');
 }
 
+/* All'avvio, in silenzio: se c'e internet il binario e gia da parte quando
+   serve, senza che nessuno debba ricordarsene. */
+window.addEventListener('load', () => setTimeout(() => fwPrefetch(true), 4000));
 /* ===== Slider Handlers ===== */
 /* ===== Slider Handlers ===== */
 function initSliders() {
