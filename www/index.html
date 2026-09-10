@@ -339,6 +339,23 @@ body.day .btn-modern-network {
 .field-row input{ flex:1 1 auto }
 .field-row .btn-modern-cal{ flex:0 0 auto;white-space:nowrap }
 
+/* ====== Elenco degli spot ====== */
+.spot-list{ display:flex;flex-direction:column;gap:6px;margin-top:8px }
+.spot-item{
+  display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;
+  padding:9px 11px;border-radius:10px;background:#0a1626;border:1px solid var(--navy-3)
+}
+.spot-name{
+  font-size:15px;font-weight:700;color:var(--text);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 120px;min-width:0
+}
+.spot-cmd{ display:flex;gap:5px;flex:0 0 auto }
+.btn-mini{
+  padding:6px 9px;font-size:12px;font-weight:700;border-radius:8px;
+  background:#1b3a5c;color:var(--text);border:1px solid var(--navy-3);letter-spacing:.02em
+}
+.btn-mini:active{ background:#27527f }
+
 /* ====== Elenco delle reti trovate ====== */
 .ssid-list{ display:flex;flex-direction:column;gap:6px;margin-top:10px }
 .ssid-item{
@@ -591,9 +608,15 @@ body.day .btn-modern-network {
         <div class="hint">
           Trascina per spostare la carta, pizzica per lo zoom. Un waypoint si
           afferra col dito e si sposta; toccalo per selezionarlo.
+          <b>Tieni premuto</b> su un punto per segnarlo come spot di pesca.
         </div>
 
         <div id="mapInfo" class="hint" style="font-size:14px;margin-top:8px">—</div>
+
+        <!-- Gli spot stanno a bordo: l'app li mostra e li comanda. -->
+        <div class="sec-title" style="margin-top:14px">Spot di pesca</div>
+        <div id="spotInfo" class="hint">Tieni premuto sulla mappa per segnarne uno.</div>
+        <div id="spotList" class="spot-list"></div>
 
         <!-- La rotta viene compilata in una coda di istruzioni e caricata sulla
              centralina: da quel momento il telefono si puo spegnere. -->
@@ -1069,6 +1092,115 @@ function mapClearWps(){
   mapDraw();
 }
 
+/* ===== SPOT DI PESCA =====
+   Vivono sulla centralina, non qui: sono il frutto di anni di uscite e non
+   devono sparire con un telefono formattato. L'app li legge da /api/spots, li
+   mostra e li modifica, ma la copia buona sta a bordo — la stessa scelta fatta
+   per la rotta.
+
+   "Vai allo spot", "girici intorno" e "passaci sopra" non sono navigazione
+   nuova: la centralina li compone con la coda di istruzioni che gia segue le
+   rotte disegnate sulla mappa. Qui si preme un pulsante e si conferma. */
+let SPOTS = [];
+
+async function spotLoad(){
+  try {
+    const r = await fetch(apiBase() + '/api/spots', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    SPOTS = await r.json();
+    spotRender();
+    mapDraw();
+  } catch(e){
+    const el = document.getElementById('spotInfo');
+    if (el) el.textContent = 'Spot non leggibili: sei collegato alla centralina?';
+  }
+}
+
+function spotCmd(v){ send('$PEUNO,CMD,SPOT=' + v); setTimeout(spotLoad, 400); }
+
+/* Tenere premuto sulla mappa segna il punto e ne chiede il nome. */
+function spotAddAt(lat, lon){
+  const nome = prompt('Nome dello spot', 'Spot ' + (SPOTS.length + 1));
+  if (nome === null) return;                       // annullato
+  spotCmd('ADD,' + lat.toFixed(6) + ',' + lon.toFixed(6) + ',' + nome.trim());
+  log('Spot salvato a bordo: ' + (nome.trim() || 'senza nome'));
+}
+
+function spotRender(){
+  const box = document.getElementById('spotList');
+  const info = document.getElementById('spotInfo');
+  if (info) info.textContent = SPOTS.length
+    ? SPOTS.length + ' spot a bordo'
+    : 'Nessuno spot. Tieni premuto sulla mappa per segnarne uno.';
+  if (!box) return;
+  box.innerHTML = '';
+  for (const s of SPOTS){
+    const riga = document.createElement('div');
+    riga.className = 'spot-item';
+    const nome = document.createElement('div');
+    nome.className = 'spot-name';
+    nome.textContent = s.nome;
+    const cmd = document.createElement('div');
+    cmd.className = 'spot-cmd';
+    const bottone = (testo, azione, titolo) => {
+      const b = document.createElement('button');
+      b.className = 'btn-mini';
+      b.textContent = testo;
+      b.title = titolo || '';
+      b.onclick = azione;
+      return b;
+    };
+    cmd.appendChild(bottone('VAI',    () => spotFigura('GOTO', s)));
+    cmd.appendChild(bottone('GIRA',   () => spotFigura('CIRCLE', s)));
+    cmd.appendChild(bottone('PASSA',  () => spotFigura('PASS', s)));
+    cmd.appendChild(bottone('CENTRA', () => { MAP.follow=false; MAP.cLat=s.lat; MAP.cLon=s.lon; mapDraw(); }));
+    cmd.appendChild(bottone('✕',      () => {
+      if (confirm('Eliminare lo spot "' + s.nome + '"?')) spotCmd('DEL,' + s.n);
+    }));
+    riga.appendChild(nome);
+    riga.appendChild(cmd);
+    box.appendChild(riga);
+  }
+}
+
+/* Le tre figure. La centralina prepara la rotta e la lascia ferma: si parte
+   sempre e solo con START, che resta l'unico punto da cui la barca si muove. */
+function spotFigura(tipo, s){
+  let cmd, testo;
+  if (tipo === 'GOTO'){
+    cmd = 'GOTO,' + s.n;
+    testo = 'Preparare la rotta verso "' + s.nome + '"?';
+  } else if (tipo === 'CIRCLE'){
+    const r = parseInt(prompt('Raggio del cerchio attorno a "' + s.nome + '" (metri)', '60'), 10);
+    if (!r || r < 15){ if (r) log('Raggio troppo piccolo: minimo 15 m'); return; }
+    const giri = parseInt(prompt('Quanti giri? 0 = finche non lo fermi', '2'), 10) || 0;
+    cmd = 'CIRCLE,' + s.n + ',' + r + ',' + giri;
+    testo = 'Preparare ' + (giri || 'infiniti') + ' giri di raggio ' + r + ' m attorno a "' + s.nome + '"?';
+  } else {
+    const len = parseInt(prompt('Lunghezza della passata sopra "' + s.nome + '" (metri)', '200'), 10);
+    if (!len || len < 40){ if (len) log('Passata troppo corta: minimo 40 m'); return; }
+    const giri = parseInt(prompt('Quante passate? 0 = finche non lo fermi', '4'), 10) || 0;
+    cmd = 'PASS,' + s.n + ',' + len + ',' + giri;
+    testo = 'Preparare ' + (giri || 'infinite') + ' passate da ' + len + ' m sopra "' + s.nome + '"?';
+  }
+  if (!confirm(testo + '\n\nLa rotta viene solo preparata: per farla eseguire serve START.')) return;
+  spotCmd(cmd);
+}
+
+/* Sulla mappa: cerchietto col punto al centro, diverso dai waypoint di rotta
+   perche uno spot e un posto, non un passaggio. */
+function spotDrawOn(g, fg){
+  for (const s of SPOTS){
+    const p = mapGeoToScreen(s.lat, s.lon);
+    g.strokeStyle = 'rgba(255,120,180,0.95)'; g.lineWidth = 2;
+    g.beginPath(); g.arc(p.px, p.py, 7, 0, 6.283); g.stroke();
+    g.fillStyle = 'rgba(255,120,180,0.95)';
+    g.beginPath(); g.arc(p.px, p.py, 2.5, 0, 6.283); g.fill();
+    g.fillStyle = fg; g.font = '11px system-ui,sans-serif';
+    g.fillText(s.nome, p.px + 11, p.py + 4);
+  }
+}
+
 /* ===== ROTTA =====
    L'app e un editor, non un pilota: i waypoint disegnati qui vengono compilati
    in una coda di istruzioni e caricati sulla centralina. Da quel momento il
@@ -1494,6 +1626,8 @@ function mapDraw(){
     g.stroke();
   }
 
+  spotDrawOn(g, fg);
+
   // rotta fra i waypoint, a partire dalla barca se c'e il fix
   if (MAP.wps.length){
     g.strokeStyle = 'rgba(255,180,60,0.9)'; g.lineWidth = 2; g.setLineDash([6,4]);
@@ -1575,6 +1709,7 @@ function mapDraw(){
 (function(){
   const GRAB_PX = 22;          // quanto largo e il bersaglio di un waypoint
   let dragWp = -1, panning = false, lx = 0, ly = 0, moved = 0, pinch = 0;
+  let pressTimer = null;   // pressione lunga: segna uno spot
 
   function wpAt(px, py){
     for (let i = MAP.wps.length - 1; i >= 0; i--){
@@ -1608,12 +1743,23 @@ function mapDraw(){
       if (i >= 0){ dragWp = i; MAP.sel = i; cv.setPointerCapture(e.pointerId); mapDraw(); return; }
 
       panning = true; MAP.follow = false;
+
+      // Tenere premuto fermi su mappa vuota segna uno spot. Il dito che si
+      // muove annulla: chi trascina la carta non vuole salvare niente.
+      const g = mapScreenToGeo(px, py);
+      pressTimer = setTimeout(() => {
+        pressTimer = null;
+        panning = false;
+        spotAddAt(g.lat, g.lon);
+      }, 650);
     });
 
     cv.addEventListener('pointermove', function(e){
       const dx = e.clientX - lx, dy = e.clientY - ly;
       if (dragWp < 0 && !panning) return;
       moved += Math.abs(dx) + Math.abs(dy);
+      // Bastano pochi pixel per capire che si sta trascinando, non premendo.
+      if (pressTimer && moved > 8){ clearTimeout(pressTimer); pressTimer = null; }
 
       if (dragWp >= 0){
         const r = cv.getBoundingClientRect();
@@ -1628,6 +1774,7 @@ function mapDraw(){
     });
 
     function fine(e){
+      if (pressTimer){ clearTimeout(pressTimer); pressTimer = null; }
       // Un tocco secco sul vuoto toglie la selezione: serve per capire quale
       // waypoint e "quello attivo" senza dover per forza spostarne uno.
       if (panning && moved < 6 && MAP.sel >= 0){ MAP.sel = -1; mapDraw(); }
@@ -1652,6 +1799,7 @@ function mapDraw(){
 
     bathyLoad();
     worldLoad();
+    spotLoad();
     mapDraw();
   }
   bind();
@@ -2217,7 +2365,7 @@ window.addEventListener('load', init);
    ferma a 1.2.7 mentre version.json diceva 1.2.8, quindi a ogni avvio l'app
    proponeva di installare un APK di ottobre — piu vecchio di tutto quello che
    c'e adesso. Il confronto ora e numerico e rifiuta i passi indietro. */
-const CURRENT_APP_VERSION = "1.3.6";
+const CURRENT_APP_VERSION = "1.3.7";
 
 function versioneNuova(remota, locale){
   const n = s => String(s).split(/[.\-+]/).map(x => parseInt(x, 10) || 0);
