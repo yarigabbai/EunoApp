@@ -1003,9 +1003,10 @@ async function worldLoad(){
 }
 
 function worldDraw(g, w, h){
-  // Sopra i 200 m per pixel la carta fine non aggiunge niente che si veda,
-  // e sono 60.000 punti da attraversare a ogni ridisegno.
-  const set = (mapMPerPx() > 200 || !WORLD.hi) ? WORLD.lo : WORLD.hi;
+  // Sopra gli 800 m per pixel - una vista da mezza Europa - la carta fine non
+  // aggiunge niente che si veda, e sono 60.000 punti da attraversare a ogni
+  // ridisegno. Sotto, il ritaglio per riquadro rende il costo trascurabile.
+  const set = (mapMPerPx() > 800 || !WORLD.hi) ? WORLD.lo : WORLD.hi;
   if (!set) return;
 
   const a = mapScreenToGeo(0, h), b = mapScreenToGeo(w, 0);   // angoli della vista
@@ -1029,6 +1030,86 @@ function worldDraw(g, w, h){
     g.fill();
     g.stroke();
   }
+}
+
+/* ===== PORTI E ABITATI =====
+   Riferimenti per capire dove si e senza dover leggere le coordinate. Da
+   Natural Earth, dominio pubblico: mille porti e mille fra capitali e citta
+   grandi, 33 kB l'uno. Degli abitati si fermano ai primi sei ranghi — sotto
+   quella soglia sono settemila paesini dell'entroterra, che su una carta
+   nautica non servono e peserebbero cinque megabyte.
+
+   Ogni punto porta un rango di importanza: a mappa larga si disegnano solo i
+   piu importanti, altrimenti diventa una macchia di scritte. */
+const PLACES = { ports: null, towns: null, loading: false };
+
+async function placesLoad(){
+  if (PLACES.loading) return;
+  PLACES.loading = true;
+  for (const [file, dove] of [['places-ports.json','ports'], ['places-towns.json','towns']]){
+    try {
+      const r = await fetch(file);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      PLACES[dove] = await r.json();
+      mapDraw();
+    } catch(e){ /* senza riferimenti la mappa funziona lo stesso */ }
+  }
+}
+
+/* Quanto in basso si scende nella scala di importanza, a questa scala. */
+function placesRangoMax(mpp){
+  if (mpp > 4000) return 1;
+  if (mpp > 1500) return 2;
+  if (mpp > 600)  return 4;
+  if (mpp > 200)  return 6;
+  return 9;
+}
+
+function placesDraw(g, w, h){
+  const mpp = mapMPerPx();
+  if (mpp > 12000) return;                    // vista da pianeta: solo le coste
+  const rangoMax = placesRangoMax(mpp);
+  const a = mapScreenToGeo(0, h), b = mapScreenToGeo(w, 0);
+
+  // Le etichette che si sovrappongono non si leggono: si tiene una lista dei
+  // rettangoli gia occupati e si salta chi ci finisce sopra. I punti si
+  // disegnano comunque, sono le scritte a darsi fastidio.
+  const occupati = [];
+  const libero = (x, y, larg) => {
+    for (const r of occupati)
+      if (x < r[2] && x + larg > r[0] && y - 9 < r[3] && y + 3 > r[1]) return false;
+    occupati.push([x, y - 9, x + larg, y + 3]);
+    return true;
+  };
+
+  g.font = '11px system-ui,sans-serif';
+  g.textAlign = 'left';
+
+  const disegna = (lista, colore, porto) => {
+    if (!lista) return;
+    for (const p of lista){
+      if (p[3] > rangoMax) break;              // la lista e ordinata per rango
+      if (p[0] < a.lon || p[0] > b.lon || p[1] < a.lat || p[1] > b.lat) continue;
+      const s = mapGeoToScreen(p[1], p[0]);
+      g.fillStyle = colore;
+      if (porto){
+        // Un quadratino: si distingue dal pallino degli abitati anche piccolo.
+        g.fillRect(s.px - 2.5, s.py - 2.5, 5, 5);
+      } else {
+        g.beginPath(); g.arc(s.px, s.py, 2.5, 0, 6.283); g.fill();
+      }
+      const larg = g.measureText(p[2]).width;
+      if (libero(s.px + 5, s.py, larg)){
+        g.fillStyle = 'rgba(20,30,45,0.75)';
+        g.fillRect(s.px + 4, s.py - 9, larg + 3, 12);
+        g.fillStyle = colore;
+        g.fillText(p[2], s.px + 5, s.py + 1);
+      }
+    }
+  };
+
+  disegna(PLACES.towns, 'rgba(225,225,215,0.9)', false);
+  disegna(PLACES.ports, 'rgba(120,215,255,0.95)', true);
 }
 
 /* ===== POSIZIONE ===== */
@@ -1528,6 +1609,15 @@ function bathyPaint(g){
 function bathyDrawOn(g){
   const b = BATHY;
   if (!b || !b.iso || !b.iso.length) return;
+
+  // Visto da lontano il riquadro e largo pochi pixel: le isobate diventano un
+  // groviglio e le etichette un francobollo illeggibile. Sotto una certa
+  // larghezza si disegna solo la macchia colorata, che gia dice dov'e il
+  // basso fondale.
+  const a0 = mapGeoToScreen(b.lat1, b.lon0), z0 = mapGeoToScreen(b.lat0, b.lon1);
+  const largPx = z0.px - a0.px;
+  if (largPx < 60) return;
+  const conEtichette = largPx > 220;
   for (const c of b.iso){
     const costa = (c.level === 0);
     const t = Math.min(1, c.level / 60);
@@ -1546,7 +1636,7 @@ function bathyDrawOn(g){
       if (s === Math.floor(c.segs.length / 2)) etichetta = p1;
     }
     g.stroke();
-    if (etichetta && !costa){
+    if (etichetta && !costa && conEtichette){
       g.fillStyle = 'rgba(150,200,255,0.85)';
       g.font = '10px system-ui,sans-serif';
       g.fillText(c.level + ' m', etichetta.px + 3, etichetta.py - 3);
@@ -1588,6 +1678,7 @@ function mapDraw(){
 
   bathyPaint(g);
   bathyDrawOn(g);
+  placesDraw(g, w, h);
 
   // Cornice del riquadro scaricato: si deve vedere dove finisce il dettaglio.
   if (BATHY){
@@ -1799,6 +1890,7 @@ function mapDraw(){
 
     bathyLoad();
     worldLoad();
+    placesLoad();
     spotLoad();
     mapDraw();
   }
@@ -2365,7 +2457,7 @@ window.addEventListener('load', init);
    ferma a 1.2.7 mentre version.json diceva 1.2.8, quindi a ogni avvio l'app
    proponeva di installare un APK di ottobre — piu vecchio di tutto quello che
    c'e adesso. Il confronto ora e numerico e rifiuta i passi indietro. */
-const CURRENT_APP_VERSION = "1.3.7";
+const CURRENT_APP_VERSION = "1.3.8";
 
 function versioneNuova(remota, locale){
   const n = s => String(s).split(/[.\-+]/).map(x => parseInt(x, 10) || 0);
