@@ -649,7 +649,7 @@ function initTheme(){
 }
 
 /* ===== State + WS ===== */
-let ws, logEl = document.getElementById('log');
+let ws, wsOpenedAt = 0, logEl = document.getElementById('log');
 let hdg = 0, cmd = 0, err = 0, cog = 0, sog = 0, motor = false;
 
 let sliderProtectionTime = 0; // Timestamp di quando hai modificato uno slider
@@ -674,9 +674,23 @@ function wsConnect(){
     const url = "ws://192.168.4.1:81/";  
   log('WS → '+url);
   try{ ws = new WebSocket(url); }catch(e){ log('WS error init '+e.message); setWsLed(false); return; }
-  ws.onopen  = _=> { log('WS connected'); setWsLed(true); };
-  ws.onclose = _=> { log('WS closed, retry 2s'); setWsLed(false); setTimeout(wsConnect,2000); };
-   ws.onerror = e=> { log('WS error ' + e.message); setWsLed(false); };
+  ws.onopen  = _=> { log('WS connessa'); wsOpenedAt = Date.now(); setWsLed(true); };
+  /* L'evento di errore di una WebSocket non porta nessun dettaglio: "e.message"
+     e sempre undefined, ed e per questo che in log si leggeva "error undefined".
+     Quello che serve davvero sta nell'evento di chiusura: il codice dice se e
+     caduta la rete (1006), se e stata la centralina a chiudere (1000/1001)
+     o se il telefono ha cambiato rete mentre eravamo connessi. */
+  ws.onclose = ev => {
+    const quanto = wsOpenedAt ? Math.round((Date.now() - wsOpenedAt)/1000) + 's' : 'mai aperta';
+    log('WS chiusa: codice ' + ev.code
+        + (ev.reason ? ' (' + ev.reason + ')' : '')
+        + (ev.wasClean ? ', chiusura pulita' : ', caduta')
+        + ', durata ' + quanto + ' - riprovo fra 2s');
+    wsOpenedAt = 0;
+    setWsLed(false);
+    setTimeout(wsConnect, 2000);
+  };
+  ws.onerror = _ => { setWsLed(false); };   // il motivo arriva con onclose
 
   ws.onmessage = ev=>{
     const t = (ev.data || '').trim();
@@ -1310,6 +1324,10 @@ function parseTelem(line){
   if (m.SWING!==undefined) setSwing(parseInt(m.SWING), parseFloat(m.DEV||0), m.DEVOK==='1');
   if (m.LAT!==undefined && m.LON!==undefined)
     mapOnFix(parseFloat(m.LAT), parseFloat(m.LON), m.FIX==='1');
+  // Se la centralina si inchioda per qualche centinaio di ms la WebSocket cade
+  // e sembra un problema di rete: qui si vede se invece e lei che si ferma.
+  if (m.LOOPMAX!==undefined && parseInt(m.LOOPMAX) > 300)
+    log('Centralina lenta: giro piu lungo ' + m.LOOPMAX + ' ms');
   if (m.ROUTE!==undefined)
     setRoute(m.ROUTE, parseInt(m.RIDX||0), parseInt(m.RN||0),
              parseInt(m.XTE||0), parseInt(m.WPD||0));
