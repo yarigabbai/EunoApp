@@ -1922,7 +1922,21 @@ window.addEventListener('load', init);
   pingInternet();
 </script>
 <script>
-const CURRENT_APP_VERSION = "1.2.7";
+/* Va tenuta allineata a package.json e alzata a ogni APK pubblicato. Era
+   ferma a 1.2.7 mentre version.json diceva 1.2.8, quindi a ogni avvio l'app
+   proponeva di installare un APK di ottobre — piu vecchio di tutto quello che
+   c'e adesso. Il confronto ora e numerico e rifiuta i passi indietro. */
+const CURRENT_APP_VERSION = "1.3.0";
+
+function versioneNuova(remota, locale){
+  const n = s => String(s).split(/[.\-+]/).map(x => parseInt(x, 10) || 0);
+  const a = n(remota), b = n(locale);
+  for (let i = 0; i < Math.max(a.length, b.length); i++){
+    if ((a[i]||0) > (b[i]||0)) return true;
+    if ((a[i]||0) < (b[i]||0)) return false;
+  }
+  return false;
+}
 const VERSION_URL = "https://raw.githubusercontent.com/yarigabbai/eunoupdate/refs/heads/main/version.json";
 
 async function checkAppUpdate() {
@@ -1937,7 +1951,7 @@ async function checkAppUpdate() {
     try { j = JSON.parse(text); }
     catch(e) { throw new Error("Contenuto non JSON: " + e.message); }
 
-    if (j.latest && j.latest !== CURRENT_APP_VERSION) {
+    if (j.latest && versioneNuova(j.latest, CURRENT_APP_VERSION)) {
       const msg = `È disponibile la versione ${j.latest}.\nVuoi scaricarla ora?`;
       if (confirm(msg) && j.apk_url) {
         window.open(j.apk_url, "_system");
