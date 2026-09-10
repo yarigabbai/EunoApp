@@ -516,7 +516,7 @@ body.day .btn-modern-network {
           <div class="lbl" id="mapFix" style="opacity:.85">no fix</div>
         </div>
 
-        <canvas id="plot" style="width:100%;height:min(58vh,420px);
+        <canvas id="plot" data-noswipe style="width:100%;height:min(58vh,420px);
                  display:block;border-radius:10px;touch-action:none"></canvas>
 
         <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">
@@ -636,7 +636,17 @@ function go(i){
 }
 let sx=0, dx=0, touching=false;
 const vp=document.getElementById('viewport');
-vp.addEventListener('touchstart',e=>{ touching=true; sx=e.touches[0].clientX; });
+
+/* Alcuni comandi si usano trascinando in orizzontale, e lo scorrimento fra le
+   pagine glieli rubava: spostare la mappa o un waypoint cambiava sezione a
+   meta gesto. Chi ha data-noswipe - la mappa, i cursori - tiene il dito. */
+function bloccaScorrimento(el){
+  return !!(el && el.closest && el.closest('[data-noswipe], input[type=range], canvas'));
+}
+vp.addEventListener('touchstart',e=>{
+  if (bloccaScorrimento(e.target)){ touching=false; dx=0; return; }
+  touching=true; sx=e.touches[0].clientX;
+});
 vp.addEventListener('touchmove',e=>{ if(!touching)return; dx=e.touches[0].clientX - sx; });
 vp.addEventListener('touchend',()=>{ if(!touching)return; touching=false; if(Math.abs(dx)>50){ if(dx<0) go(page+1); else go(page-1);} dx=0; });
 window.addEventListener('keydown',e=>{ if(e.key==='ArrowRight') go(page+1); if(e.key==='ArrowLeft') go(page-1); });
@@ -861,16 +871,23 @@ function worldPrep(arr){
   });
 }
 
+/* I due livelli si caricano separatamente perche non stanno sempre nello
+   stesso posto: dentro l'app ci sono entrambi, mentre la web app servita dalla
+   centralina ha solo quello grosso — gli 875 kB del fine non valgono lo spazio
+   in memoria a bordo. Se il fine manca, la mappa funziona lo stesso, solo meno
+   dettagliata da vicino. */
 async function worldLoad(){
   if (WORLD.loading) return;
   WORLD.loading = true;
-  try {
-    WORLD.lo = worldPrep(await (await fetch('world110.json')).json());
-    mapDraw();
-    WORLD.hi = worldPrep(await (await fetch('world50.json')).json());
-    mapDraw();
-  } catch(e){
-    log('Mappa: carta del mondo non caricata (' + e.message + ')');
+  for (const [file, dove] of [['world110.json','lo'], ['world50.json','hi']]){
+    try {
+      const r = await fetch(file);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      WORLD[dove] = worldPrep(await r.json());
+      mapDraw();
+    } catch(e){
+      if (dove === 'lo') log('Mappa: carta del mondo non caricata (' + e.message + ')');
+    }
   }
 }
 
