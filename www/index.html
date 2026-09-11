@@ -608,7 +608,7 @@ body.day .btn-modern-network {
         <div class="hint">
           Trascina per spostare la carta, pizzica per lo zoom. Un waypoint si
           afferra col dito e si sposta; toccalo per selezionarlo.
-          <b>Tieni premuto</b> su un punto per segnarlo come spot di pesca.
+          <b>Tieni premuto</b> un secondo e mezzo su un punto per segnarlo come spot.
         </div>
 
         <div id="mapInfo" class="hint" style="font-size:14px;margin-top:8px">—</div>
@@ -1768,6 +1768,10 @@ function mapDraw(){
   g.fillText('N', w-18, 20);
   g.beginPath(); g.moveTo(w-14,26); g.lineTo(w-14,44); g.stroke();
 
+  // Anello della pressione lunga: sopra a tutto, e l'unica cosa che risponde
+  // al dito in quel momento.
+  if (window.mapPressRing) window.mapPressRing(g);
+
   // riga di stato
   const el = document.getElementById('mapInfo');
   if (el){
@@ -1800,7 +1804,28 @@ function mapDraw(){
 (function(){
   const GRAB_PX = 22;          // quanto largo e il bersaglio di un waypoint
   let dragWp = -1, panning = false, lx = 0, ly = 0, moved = 0, pinch = 0;
-  let pressTimer = null;   // pressione lunga: segna uno spot
+  // Pressione lunga: segna uno spot. Un secondo e mezzo, con un cerchietto che
+  // si chiude sotto il dito per far vedere che sta contando — altrimenti sembra
+  // che l'app non risponda e si stacca il dito troppo presto.
+  const SPOT_PRESS_MS = 1500;
+  let pressTimer = null, pressStart = 0, pressAt = null;
+
+  function pressTick(){
+    if (!pressAt || !pressTimer) return;
+    mapDraw();
+    requestAnimationFrame(pressTick);
+  }
+
+  // Chiamata da mapDraw: disegna l'anello di attesa se c'e una pressione in corso.
+  window.mapPressRing = function(g){
+    if (!pressAt || !pressTimer) return;
+    const t = Math.min(1, (Date.now() - pressStart) / SPOT_PRESS_MS);
+    g.strokeStyle = 'rgba(255,120,180,0.9)';
+    g.lineWidth = 3;
+    g.beginPath();
+    g.arc(pressAt.px, pressAt.py, 18, -Math.PI/2, -Math.PI/2 + t * 6.283);
+    g.stroke();
+  };
 
   function wpAt(px, py){
     for (let i = MAP.wps.length - 1; i >= 0; i--){
@@ -1837,12 +1862,25 @@ function mapDraw(){
 
       // Tenere premuto fermi su mappa vuota segna uno spot. Il dito che si
       // muove annulla: chi trascina la carta non vuole salvare niente.
+      //
+      // Un secondo e mezzo, non mezzo secondo: in barca la mappa si sposta di
+      // continuo e una soglia corta faceva saltare fuori la richiesta del nome
+      // mentre si stava solo guardando in giro. Meglio aspettare un attimo in
+      // piu che annullare una finestra che non si voleva.
       const g = mapScreenToGeo(px, py);
+      pressStart = Date.now();
+      pressAt = { px: px, py: py };
       pressTimer = setTimeout(() => {
         pressTimer = null;
         panning = false;
+        pressAt = null;
+        // Un colpetto per dire che ha preso: senza, non si sa se e il momento
+        // di staccare il dito.
+        if (navigator.vibrate) { try { navigator.vibrate(35); } catch(e){} }
         spotAddAt(g.lat, g.lon);
-      }, 650);
+        mapDraw();
+      }, SPOT_PRESS_MS);
+      pressTick();
     });
 
     cv.addEventListener('pointermove', function(e){
@@ -1850,7 +1888,7 @@ function mapDraw(){
       if (dragWp < 0 && !panning) return;
       moved += Math.abs(dx) + Math.abs(dy);
       // Bastano pochi pixel per capire che si sta trascinando, non premendo.
-      if (pressTimer && moved > 8){ clearTimeout(pressTimer); pressTimer = null; }
+      if (pressTimer && moved > 8){ clearTimeout(pressTimer); pressTimer = null; pressAt = null; }
 
       if (dragWp >= 0){
         const r = cv.getBoundingClientRect();
@@ -1865,7 +1903,7 @@ function mapDraw(){
     });
 
     function fine(e){
-      if (pressTimer){ clearTimeout(pressTimer); pressTimer = null; }
+      if (pressTimer){ clearTimeout(pressTimer); pressTimer = null; pressAt = null; }
       // Un tocco secco sul vuoto toglie la selezione: serve per capire quale
       // waypoint e "quello attivo" senza dover per forza spostarne uno.
       if (panning && moved < 6 && MAP.sel >= 0){ MAP.sel = -1; mapDraw(); }
@@ -2457,7 +2495,7 @@ window.addEventListener('load', init);
    ferma a 1.2.7 mentre version.json diceva 1.2.8, quindi a ogni avvio l'app
    proponeva di installare un APK di ottobre — piu vecchio di tutto quello che
    c'e adesso. Il confronto ora e numerico e rifiuta i passi indietro. */
-const CURRENT_APP_VERSION = "1.3.8";
+const CURRENT_APP_VERSION = "1.3.9";
 
 function versioneNuova(remota, locale){
   const n = s => String(s).split(/[.\-+]/).map(x => parseInt(x, 10) || 0);
