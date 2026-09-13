@@ -411,7 +411,9 @@ body.day .btn-modern-network {
         <!-- Order: ON/OFF, then -1 +1, then -10 +10 -->
         <div class="row" style="justify-content:center">
           <button id="btnToggle" class="btn-lg btn-off" onclick="toggle()">OFF</button>
+          <button id="btnPesca" class="btn-lg btn-step" onclick="togglePesca()">PESCA</button>
         </div>
+        <div id="pescaInfo" class="hint" style="text-align:center">Navigazione: virate rapide</div>
 
         <div class="row" style="justify-content:center;margin-top:10px">
           <button class="btn-lg btn-step" onclick="delta(-1)">−1</button>
@@ -1952,6 +1954,13 @@ function setFailsafe(state){
 /* ===== Commands ===== */
 function delta(v){ const s = v>0?('+'+v):v; send('$PEUNO,CMD,DELTA='+s); cmd = (cmd + v + 360)%360; paintHome(); updateVisual(); }
 function toggle(){ send('$PEUNO,CMD,TOGGLE=1'); motor = !motor; paintHome(); }
+
+/* PESCA: solo in pesca la virata e dosata a TurnMax, perche in traina una
+   virata brusca aggroviglia le esche. Fuori dalla pesca il pilota gira rapido.
+   GIRA e PASSA la accendono da sole; si spegne a mano. Lo stato vero arriva
+   dalla telemetria (PESCA=0/1), qui si anticipa solo il colore del pulsante. */
+let pesca = false;
+function togglePesca(){ send('$PEUNO,CMD,PESCA=TOGGLE'); pesca = !pesca; paintHome(); }
 function setMode(m){ send('$PEUNO,CMD,MODE='+m); const el=document.getElementById('mode'); if(el) el.textContent=m; }
 function applyParams(){
   ['V_min','V_max','E_min','E_max','Deadband','T_pause','T_risposta','TurnMax'].forEach(k=>{
@@ -2006,6 +2015,7 @@ function parseTelem(line){
     setRoute(m.ROUTE, parseInt(m.RIDX||0), parseInt(m.RN||0),
              parseInt(m.XTE||0), parseInt(m.WPD||0));
   if (m.MOTOR){ motor = (m.MOTOR==='ON'); }
+  if (m.PESCA!==undefined){ pesca = (m.PESCA==='1'); }
 if (m.BLE) setRingStatus(m.BLE === 'ON');
 
   // HDG/CMD/ERR
@@ -2079,6 +2089,15 @@ function paintHome(){
   btn.textContent = motor?'ON':'OFF';
   btn.classList.toggle('btn-on',  motor);
   btn.classList.toggle('btn-off', !motor);
+
+  const bp = document.getElementById('btnPesca');
+  if (bp){
+    bp.textContent = pesca ? 'PESCA ON' : 'PESCA';
+    bp.classList.toggle('btn-on',   pesca);
+    bp.classList.toggle('btn-step', !pesca);
+  }
+  const pi = document.getElementById('pescaInfo');
+  if (pi) pi.textContent = pesca ? 'Pesca: virate dosate a TurnMax' : 'Navigazione: virate rapide';
 }
 
 /* ===== Visual (Angular Progress Bar) ===== */
@@ -2495,7 +2514,7 @@ window.addEventListener('load', init);
    ferma a 1.2.7 mentre version.json diceva 1.2.8, quindi a ogni avvio l'app
    proponeva di installare un APK di ottobre — piu vecchio di tutto quello che
    c'e adesso. Il confronto ora e numerico e rifiuta i passi indietro. */
-const CURRENT_APP_VERSION = "1.3.13";
+const CURRENT_APP_VERSION = "1.3.14";
 
 function versioneNuova(remota, locale){
   const n = s => String(s).split(/[.\-+]/).map(x => parseInt(x, 10) || 0);
